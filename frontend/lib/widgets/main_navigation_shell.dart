@@ -80,15 +80,23 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
     ];
 
     if (isCompact) {
-      return Scaffold(
-        body: IndexedStack(
-          index: _selectedIndex,
-          children: pages,
-        ),
-        bottomNavigationBar: NavigationBar(
-          selectedIndex: _selectedIndex,
-          onDestinationSelected: _selectTab,
-          destinations: _destinations,
+      return PopScope(
+        canPop: _selectedIndex == 0,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && _selectedIndex != 0) {
+            _selectTab(0);
+          }
+        },
+        child: Scaffold(
+          body: IndexedStack(
+            index: _selectedIndex,
+            children: pages,
+          ),
+          bottomNavigationBar: NavigationBar(
+            selectedIndex: _selectedIndex,
+            onDestinationSelected: _selectTab,
+            destinations: _destinations,
+          ),
         ),
       );
     }
@@ -100,6 +108,9 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
             selectedIndex: _selectedIndex,
             onDestinationSelected: _selectTab,
             extended: Responsive.isExpanded(context),
+            labelType: Responsive.isExpanded(context)
+                ? NavigationRailLabelType.none
+                : NavigationRailLabelType.all,
             leading: Padding(
               padding: const EdgeInsets.symmetric(vertical: 16),
               child: JobMailLogo(

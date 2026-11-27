@@ -262,9 +262,9 @@ class _AuthScreenState extends State<AuthScreen> {
           content: TextField(
             controller: controller,
             keyboardType: TextInputType.url,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'API Base URL',
-              hintText: 'http://localhost:8000',
+              hintText: ApiConfig.endpointHint,
             ),
           ),
           actions: <Widget>[
@@ -284,9 +284,11 @@ class _AuthScreenState extends State<AuthScreen> {
       final ok = await settings.updateApiBaseUrl(controller.text);
       if (!ok && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             content: Text(
-              'Invalid URL. Only HTTPS or local development hosts are allowed.',
+              ApiConfig.allowLocalHttpInCurrentBuild
+                  ? 'Invalid URL. Use HTTPS or a local LAN/loopback HTTP address.'
+                  : 'Invalid URL. Release builds require an HTTPS backend URL.',
             ),
           ),
         );

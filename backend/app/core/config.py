@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 import logging
+from pathlib import Path
 import secrets
 from urllib.parse import urlparse
 from cryptography.fernet import Fernet
@@ -10,16 +11,28 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger("jobmail.config")
 
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+
 _PLACEHOLDER_SECRETS = {
     "",
     "replace-with-strong-random-secret",
     "replace-with-fernet-base64-key",
+    "replace-via-secret-manager",
     "your_jwt_secret",
     "your_google_client_id",
     "your_google_client_secret",
+    "your_database_url",
+    "mongodb+srv://your_db_user:your_db_password@cluster.example.mongodb.net/?retryWrites=true&w=majority",
 }
 
-_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
+_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
+
+
+def _strip_matching_quotes(value: str) -> str:
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {'"', "'"}:
+        return cleaned[1:-1].strip()
+    return cleaned
 
 
 def _parse_key_list(raw: str) -> list[str]:
@@ -36,11 +49,32 @@ def _has_localhost(url_or_origin: str) -> bool:
     return host in _LOCALHOST_HOSTS
 
 
+def _has_localhost_mongodb(uri: str) -> bool:
+    cleaned = uri.strip()
+    parsed = urlparse(cleaned)
+    authority = parsed.netloc
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+    if not authority:
+        return False
+    for host_entry in authority.split(","):
+        candidate = host_entry.strip().lower()
+        if not candidate:
+            continue
+        if candidate.startswith("[") and "]" in candidate:
+            hostname = candidate[1:candidate.index("]")]
+        else:
+            hostname = candidate.split(":", 1)[0]
+        if hostname in _LOCALHOST_HOSTS:
+            return True
+    return False
+
+
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables and optional .env file."""
+    """Application settings loaded from OS environment variables and backend/.env."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(BACKEND_DIR / ".env"), ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -51,12 +85,15 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # Database
-    mongodb_uri: str = "mongodb://localhost:27017"
+    # Database (read from MONGODB_URI and MONGODB_DB_NAME; no localhost production fallback)
+    mongodb_uri: str = ""
     mongodb_db_name: str = "jobmail"
     mongodb_tls_ca_file: str = ""
     mongodb_max_pool_size: int = Field(default=50, ge=5, le=500)
     mongodb_min_pool_size: int = Field(default=2, ge=0, le=50)
+    mongodb_server_selection_timeout_ms: int = Field(default=10000, ge=1000, le=60000)
+    mongodb_connect_timeout_ms: int = Field(default=10000, ge=1000, le=60000)
+    mongodb_socket_timeout_ms: int = Field(default=20000, ge=2000, le=120000)
 
     # Security, Hashing, Sessions & MultiFernet Encryption
     jwt_secret_key: str = ""
@@ -154,6 +191,11 @@ class Settings(BaseSettings):
             return self.enable_api_docs
         return not self.is_production
 
+    @field_validator("mongodb_uri", "mongodb_db_name")
+    @classmethod
+    def _normalize_mongo_fields(cls, value: str) -> str:
+        return _strip_matching_quotes(value)
+
     @field_validator("environment")
     @classmethod
     def _normalize_environment(cls, value: str) -> str:
@@ -172,6 +214,15 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: object) -> None:
         is_prod = self.is_production
+
+        if not self.mongodb_db_name:
+            raise ValueError("MONGODB_DB_NAME must be configured to a non-empty database name.")
+        if self.mongodb_min_pool_size > self.mongodb_max_pool_size:
+            raise ValueError("MONGODB_MIN_POOL_SIZE cannot exceed MONGODB_MAX_POOL_SIZE.")
+        if self.mongodb_uri and not self.mongodb_uri.startswith(("mongodb://", "mongodb+srv://")):
+            raise ValueError(
+                "MONGODB_URI must start with 'mongodb://' or 'mongodb+srv://'."
+            )
 
         if self.jwt_secret_key.strip() in _PLACEHOLDER_SECRETS or (
             is_prod and len(self.jwt_secret_key.strip()) < 32
@@ -204,6 +255,14 @@ class Settings(BaseSettings):
                 self.token_encryption_key = keys[0]
 
         if is_prod:
+            if not self.mongodb_uri or self.mongodb_uri in _PLACEHOLDER_SECRETS:
+                raise ValueError(
+                    "MONGODB_URI environment variable is required in production and must point to MongoDB Atlas."
+                )
+            if _has_localhost_mongodb(self.mongodb_uri):
+                raise ValueError(
+                    "MONGODB_URI must not target localhost in production; configure your MongoDB Atlas URI."
+                )
             if self.debug:
                 raise ValueError("DEBUG must be false in production.")
             if _has_localhost(self.google_redirect_uri):

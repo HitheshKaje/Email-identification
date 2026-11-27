@@ -143,14 +143,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  GridView.count(
-                    crossAxisCount: Responsive.gridColumnCount(context),
+                  GridView(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio:
-                        Responsive.isCompact(context) ? 1.25 : 1.4,
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: Responsive.gridColumnCount(context),
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      mainAxisExtent: Responsive.isCompact(context) ? 164 : 158,
+                    ),
                     children: <Widget>[
                       StatCard(
                         title: 'Total Job Emails',

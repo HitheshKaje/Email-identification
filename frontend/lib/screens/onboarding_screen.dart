@@ -136,56 +136,73 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       },
                       itemBuilder: (context, index) {
                         final item = _benefits[index];
-                        return Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: <Widget>[
-                            Container(
-                              width: 112,
-                              height: 112,
-                              decoration: BoxDecoration(
-                                color: item.color.withAlpha(28),
-                                borderRadius: BorderRadius.circular(32),
-                                border:
-                                    Border.all(color: item.color.withAlpha(80)),
-                              ),
-                              child: Icon(
-                                item.icon,
-                                size: 54,
-                                color: item.color,
-                              ),
-                            ),
-                            const SizedBox(height: 28),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 5,
-                              ),
-                              decoration: BoxDecoration(
-                                color: item.color.withAlpha(24),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Text(
-                                'Benefit ${item.stepNumber} of ${_benefits.length}',
-                                style: TextStyle(
-                                  color: item.color,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 12,
+                        return LayoutBuilder(
+                          builder: (context, constraints) {
+                            return SingleChildScrollView(
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  minHeight: constraints.maxHeight,
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: <Widget>[
+                                    Container(
+                                      width: 112,
+                                      height: 112,
+                                      decoration: BoxDecoration(
+                                        color: item.color.withAlpha(28),
+                                        borderRadius:
+                                            BorderRadius.circular(32),
+                                        border: Border.all(
+                                          color: item.color.withAlpha(80),
+                                        ),
+                                      ),
+                                      child: Icon(
+                                        item.icon,
+                                        size: 54,
+                                        color: item.color,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 28),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: item.color.withAlpha(24),
+                                        borderRadius:
+                                            BorderRadius.circular(20),
+                                      ),
+                                      child: Text(
+                                        'Benefit ${item.stepNumber} of ${_benefits.length}',
+                                        style: TextStyle(
+                                          color: item.color,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 14),
+                                    Text(
+                                      item.title,
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineMedium,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      item.description,
+                                      textAlign: TextAlign.center,
+                                      style:
+                                          Theme.of(context).textTheme.bodyLarge,
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            Text(
-                              item.title,
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context).textTheme.headlineMedium,
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              item.description,
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context).textTheme.bodyLarge,
-                            ),
-                          ],
+                            );
+                          },
                         );
                       },
                     ),

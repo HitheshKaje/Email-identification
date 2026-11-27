@@ -123,25 +123,23 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    settings = get_settings()
-    db = await db_manager.connect(settings)
-    scheduler: BackgroundSyncScheduler | None = None
-    if settings.auto_sync_enabled and settings.environment != "test":
-        scheduler = BackgroundSyncScheduler(db, settings)
-        scheduler.start()
-    try:
-        yield
-    finally:
-        if scheduler is not None:
-            await scheduler.stop()
-        await db_manager.close()
-
-
 def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
     resolved_settings = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        db = await db_manager.connect(resolved_settings)
+        scheduler: BackgroundSyncScheduler | None = None
+        if resolved_settings.auto_sync_enabled and resolved_settings.environment != "test":
+            scheduler = BackgroundSyncScheduler(db, resolved_settings)
+            scheduler.start()
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                await scheduler.stop()
+            await db_manager.close()
 
     docs_url = "/docs" if resolved_settings.docs_enabled else None
     redoc_url = "/redoc" if resolved_settings.docs_enabled else None

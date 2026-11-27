@@ -28,6 +28,29 @@ GoogleService-Info.plist
 *.jks
 *.keystore
 key.properties
+**/key.properties
+
+# Android build outputs, APKs, AABs, and Gradle caches
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+*.jar
+.gradle/
+**/.gradle/
+.cxx/
+**/.cxx/
+captures/
+local.properties
+**/local.properties
+frontend/android/app/debug/
+frontend/android/app/profile/
+frontend/android/app/release/
+frontend/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+frontend/android/gradlew
+frontend/android/gradlew.bat
+frontend/android/gradle/wrapper/gradle-wrapper.jar
 
 # Authentication and tokens
 secrets.json
@@ -57,15 +80,22 @@ frontend/.dart_tool/
 .packages
 frontend/.packages
 .pub-cache/
+.pub/
 .flutter-plugins
 frontend/.flutter-plugins
 .flutter-plugins-dependencies
 frontend/.flutter-plugins-dependencies
 build/
+**/build/
 frontend/build/
 .flutter-automation/
 *.freezed.dart
 *.g.dart
+*.symbols
+*.map.json
+**/ephemeral/
+**/.last_build_id
+coverage/
 
 # ML artifacts
 ml/models/*.joblib

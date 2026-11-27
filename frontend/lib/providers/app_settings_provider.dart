@@ -199,8 +199,9 @@ class AppSettingsProvider extends ChangeNotifier {
     _refreshToken = session.refreshToken ?? _refreshToken;
     _sessionId = session.sessionId ?? _sessionId;
     _currentUser = session.user;
-    _profileName =
-        session.user.name.trim().isEmpty ? 'Candidate' : session.user.name.trim();
+    _profileName = session.user.name.trim().isEmpty
+        ? 'Candidate'
+        : session.user.name.trim();
     _profileEmail = session.user.email.trim();
     _apiClient?.setAuthToken(_authToken);
     await _prefs.setSessionTokens(
@@ -374,7 +375,8 @@ class AppSettingsProvider extends ChangeNotifier {
     final repo = _repository;
     if (repo == null) return null;
     final updated = await repo.updateDataRetention(days);
-    _currentUser = _currentUser?.copyWith(dataRetentionDays: updated.dataRetentionDays);
+    _currentUser =
+        _currentUser?.copyWith(dataRetentionDays: updated.dataRetentionDays);
     notifyListeners();
     return updated;
   }

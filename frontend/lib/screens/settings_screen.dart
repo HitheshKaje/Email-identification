@@ -96,16 +96,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                'Point JobMail to your FastAPI backend URL (HTTPS required in release builds).',
+                ApiConfig.allowLocalHttpInCurrentBuild
+                    ? 'Point JobMail to your HTTPS API URL or local LAN backend during development.'
+                    : 'Point JobMail to your HTTPS production FastAPI backend URL.',
                 style: Theme.of(dialogContext).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: urlCtrl,
                 keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'API Base URL',
-                  hintText: 'http://localhost:8000',
+                  hintText: ApiConfig.endpointHint,
                 ),
               ),
             ],
@@ -132,7 +134,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             content: Text(
               ok
                   ? 'Backend API URL updated.'
-                  : 'Invalid URL. Only HTTPS or local development hosts are allowed.',
+                  : (ApiConfig.allowLocalHttpInCurrentBuild
+                        ? 'Invalid URL. Use HTTPS or a local LAN/loopback HTTP address.'
+                        : 'Invalid URL. Release builds require an HTTPS backend URL.'),
             ),
           ),
         );
@@ -681,11 +685,11 @@ class _SettingsSectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      decoration: BoxDecoration(
-        color: isDark ? AppColors.darkSurface : AppColors.lightSurface,
+    return Material(
+      color: isDark ? AppColors.darkSurface : AppColors.lightSurface,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
+        side: BorderSide(
           color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
         ),
       ),

@@ -85,7 +85,8 @@ class AccountCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
                   color: statusColor.withAlpha(26),
                   borderRadius: BorderRadius.circular(20),
@@ -145,34 +146,32 @@ class AccountCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 14),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: <Widget>[
               if (account.syncStatus == AccountSyncStatus.revoked &&
                   onReconnect != null)
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: isSyncing ? null : onReconnect,
-                    icon: const Icon(Icons.link_rounded, size: 18),
-                    label: const Text('Reconnect'),
-                  ),
+                FilledButton.icon(
+                  onPressed: isSyncing ? null : onReconnect,
+                  icon: const Icon(Icons.link_rounded, size: 18),
+                  label: const Text('Reconnect'),
                 )
               else
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: (isSyncing || isVerifying) ? null : onSync,
-                    icon: isSyncing
-                        ? const SizedBox(
-                            width: 15,
-                            height: 15,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh_rounded, size: 18),
-                    label: Text(isSyncing ? 'Syncing...' : 'Sync Now'),
-                  ),
+                OutlinedButton.icon(
+                  onPressed: (isSyncing || isVerifying) ? null : onSync,
+                  icon: isSyncing
+                      ? const SizedBox(
+                          width: 15,
+                          height: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded, size: 18),
+                  label: Text(isSyncing ? 'Syncing...' : 'Sync Now'),
                 ),
               if (onVerify != null &&
-                  account.syncStatus != AccountSyncStatus.revoked) ...<Widget>[
-                const SizedBox(width: 8),
+                  account.syncStatus != AccountSyncStatus.revoked)
                 IconButton.outlined(
                   tooltip: 'Refresh connection status',
                   onPressed: (isSyncing || isVerifying) ? null : onVerify,
@@ -184,8 +183,6 @@ class AccountCard extends StatelessWidget {
                         )
                       : const Icon(Icons.verified_user_outlined, size: 18),
                 ),
-              ],
-              const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: isSyncing ? null : onDisconnect,
                 style: OutlinedButton.styleFrom(

@@ -1,9 +1,15 @@
-"""Async Motor MongoDB client, TLS configuration, lifecycle management, and index initialization."""
+"""Async Motor MongoDB client, TLS configuration, connection pooling, lifecycle, and index initialization."""
 
 import logging
+try:
+    import certifi
+except ImportError:  # pragma: no cover - optional fallback if certifi is absent
+    certifi = None  # type: ignore[assignment]
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
-from app.core.config import Settings
+from pymongo.errors import PyMongoError
+from app.core.config import Settings, _has_localhost_mongodb
+from app.core.logging import sanitize_mongodb_uri
 
 logger = logging.getLogger("jobmail.database")
 
@@ -16,25 +22,59 @@ class MongoDatabaseManager:
         self.db: AsyncIOMotorDatabase | None = None
 
     async def connect(self, settings: Settings) -> AsyncIOMotorDatabase:
+        uri = settings.mongodb_uri.strip()
+        db_name = settings.mongodb_db_name.strip()
+
+        if not uri:
+            raise ValueError(
+                "MONGODB_URI is not configured. Set MONGODB_URI to your MongoDB Atlas connection string."
+            )
+        if not uri.startswith(("mongodb://", "mongodb+srv://")):
+            raise ValueError(
+                "Invalid MONGODB_URI scheme. Expected a connection string starting with 'mongodb://' or 'mongodb+srv://'."
+            )
+        if settings.is_production and _has_localhost_mongodb(uri):
+            raise ValueError(
+                "MONGODB_URI cannot target localhost in production. Configure your MongoDB Atlas URI."
+            )
+        if not db_name:
+            raise ValueError("MONGODB_DB_NAME must be configured to a non-empty database name.")
+
         client_kwargs: dict[str, object] = {
-            "serverSelectionTimeoutMS": 5000,
+            "serverSelectionTimeoutMS": settings.mongodb_server_selection_timeout_ms,
+            "connectTimeoutMS": settings.mongodb_connect_timeout_ms,
+            "socketTimeoutMS": settings.mongodb_socket_timeout_ms,
             "maxPoolSize": settings.mongodb_max_pool_size,
             "minPoolSize": settings.mongodb_min_pool_size,
+            "retryWrites": True,
+            "retryReads": True,
+            "appname": "jobmail-api",
         }
         if settings.mongodb_tls_ca_file.strip():
             client_kwargs["tls"] = True
             client_kwargs["tlsCAFile"] = settings.mongodb_tls_ca_file.strip()
-        elif settings.mongodb_uri.startswith("mongodb+srv://"):
+        elif uri.startswith("mongodb+srv://") or "tls=true" in uri.lower() or "ssl=true" in uri.lower():
             client_kwargs["tls"] = True
+            if certifi is not None:
+                client_kwargs["tlsCAFile"] = certifi.where()
 
-        self.client = AsyncIOMotorClient(
-            settings.mongodb_uri,
-            **client_kwargs,
-        )
-        self.db = self.client[settings.mongodb_db_name]
-        await self.ping()
-        await ensure_indexes(self.db)
-        logger.info("Connected to MongoDB database '%s'.", settings.mongodb_db_name)
+        safe_target = sanitize_mongodb_uri(uri)
+        try:
+            self.client = AsyncIOMotorClient(uri, **client_kwargs)
+            self.db = self.client[db_name]
+            await self.db.command("ping")
+            await ensure_indexes(self.db)
+        except Exception as exc:
+            logger.error(
+                "Failed to connect to MongoDB database '%s' (%s): %s",
+                db_name,
+                safe_target,
+                type(exc).__name__,
+            )
+            await self.close()
+            raise
+
+        logger.info("Connected to MongoDB database '%s' (%s).", db_name, safe_target)
         return self.db
 
     async def close(self) -> None:
@@ -45,10 +85,14 @@ class MongoDatabaseManager:
             logger.info("Closed MongoDB connection.")
 
     async def ping(self) -> bool:
-        if self.db is None:
+        if self.client is None or self.db is None:
             return False
-        await self.db.command("ping")
-        return True
+        try:
+            await self.db.command("ping")
+            return True
+        except PyMongoError as exc:
+            logger.warning("MongoDB health check failed: %s", type(exc).__name__)
+            return False
 
 
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:

@@ -1,0 +1,6 @@
+# Copy to frontend/android/key.properties for Play Store release signing.
+# Never commit frontend/android/key.properties or *.jks files to Git.
+storePassword=your_keystore_password
+keyPassword=your_key_password
+keyAlias=upload
+storeFile=upload-keystore.jks

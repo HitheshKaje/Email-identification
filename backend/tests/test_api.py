@@ -3,8 +3,11 @@
 from datetime import datetime, timezone
 from cryptography.fernet import Fernet
 import pytest
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from app.authentication.encryption import TokenEncryptor
+from app.core.config import Settings
+from app.database.mongodb import MongoDatabaseManager, db_manager
+from app.main import create_app
 from app.models.enums import AccountSyncStatus, EmailCategory
 
 
@@ -341,3 +344,59 @@ def test_token_encryptor_roundtrip():
     ciphertext = encryptor.encrypt("refresh-token-xyz")
     assert ciphertext != "refresh-token-xyz"
     assert encryptor.decrypt(ciphertext) == "refresh-token-xyz"
+
+
+@pytest.mark.asyncio
+async def test_mongodb_connect_requires_explicit_uri_and_health_degrades_safely(monkeypatch):
+    manager = MongoDatabaseManager()
+    empty_settings = Settings(_env_file=None, environment="development", mongodb_uri="")
+    with pytest.raises(ValueError, match="MONGODB_URI"):
+        await manager.connect(empty_settings)
+
+    # Reads MONGODB_URI and MONGODB_DB_NAME cleanly from OS environment variables
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+    monkeypatch.setenv("MONGODB_DB_NAME", "jobmail_env_check")
+    env_settings = Settings(_env_file=None, environment="development")
+    assert env_settings.mongodb_uri == "mongodb://localhost:27017"
+    assert env_settings.mongodb_db_name == "jobmail_env_check"
+
+    # Verify FastAPI lifespan initializes pool + selected DB name and closes cleanly
+    lifespan_settings = Settings(
+        _env_file=None,
+        environment="test",
+        mongodb_uri="mongodb://localhost:27017",
+        mongodb_db_name="jobmail_test",
+        jwt_secret_key="l" * 40,
+        token_encryption_key=Fernet.generate_key().decode("ascii"),
+    )
+    test_app = create_app(lifespan_settings)
+    async with test_app.router.lifespan_context(test_app):
+        assert db_manager.db is not None
+        assert db_manager.db.name == "jobmail_test"
+        assert await db_manager.ping() is True
+    assert db_manager.db is None
+    assert db_manager.client is None
+
+
+@pytest.mark.asyncio
+async def test_health_returns_503_safely_when_ping_fails(client, monkeypatch):
+    ac, _ = client
+
+    async def broken_ping() -> bool:
+        return False
+
+    monkeypatch.setattr(db_manager, "ping", broken_ping)
+    degraded = await ac.get("/health")
+    assert degraded.status_code == 503
+    assert degraded.json()["status"] == "degraded"
+    assert degraded.json()["database"] == "disconnected"
+
+    # Also verify MongoDatabaseManager.ping() catches PyMongoError safely
+    class _BrokenDb:
+        async def command(self, _cmd: str):
+            raise PyMongoError("network down")
+
+    failing_manager = MongoDatabaseManager()
+    failing_manager.client = object()  # type: ignore[assignment]
+    failing_manager.db = _BrokenDb()  # type: ignore[assignment]
+    assert await failing_manager.ping() is False

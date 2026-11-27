@@ -4,17 +4,34 @@ import logging
 import re
 import time
 import uuid
+from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE), r"\1[REDACTED]"),
+    (
+        re.compile(r"(mongodb(?:\+srv)?://[^:\s/@]+:)([^@\s]+)(@)", re.IGNORECASE),
+        r"\1[REDACTED]\3",
+    ),
     (re.compile(r"GOCSPX-[A-Za-z0-9_\-]+"), "[REDACTED_OAUTH_SECRET]"),
     (re.compile(r"ya29\.[A-Za-z0-9_\-]+"), "[REDACTED_ACCESS_TOKEN]"),
     (re.compile(r"1//[A-Za-z0-9_\-]+"), "[REDACTED_REFRESH_TOKEN]"),
     (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b"), "[REDACTED_JWT]"),
 )
+
+
+def sanitize_mongodb_uri(uri: str | None) -> str:
+    """Return a credential-free description of a MongoDB connection URI for safe logging."""
+    raw = (uri or "").strip()
+    if not raw:
+        return "[unset]"
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.hostname:
+        port_part = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{parsed.hostname}{port_part}"
+    return redact_sensitive_text(raw)
 
 
 def mask_email(email: str | None) -> str:

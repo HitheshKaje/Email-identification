@@ -106,6 +106,7 @@ def _render_oauth_html(
 ) -> str:
     accent = "#059669" if success else "#DC2626"
     badge = "Connected" if success else "Connection Failed"
+    status_param = "success" if success else "error"
     safe_title = html.escape(title)
     safe_heading = html.escape(heading)
     safe_message = html.escape(message)
@@ -133,7 +134,12 @@ def _render_oauth_html(
     }}
     h1 {{ font-size: 22px; margin: 0 0 10px; }}
     p {{ color: #475569; line-height: 1.5; margin: 0 0 18px; }}
-    .hint {{ font-size: 13px; color: #64748b; }}
+    .btn {{
+      display: inline-block; background: #1d4ed8; color: #ffffff;
+      text-decoration: none; font-weight: 600; font-size: 14px;
+      padding: 11px 20px; border-radius: 12px; margin-bottom: 14px;
+    }}
+    .hint {{ font-size: 13px; color: #64748b; margin-bottom: 0; }}
   </style>
 </head>
 <body>
@@ -141,7 +147,8 @@ def _render_oauth_html(
     <span class="pill">{badge}</span>
     <h1>{safe_heading}</h1>
     <p>{safe_message}</p>
-    <p class="hint">You may close this browser window and return to JobMail.</p>
+    <a class="btn" href="jobmail://oauth-callback?status={status_param}">Return to JobMail App</a>
+    <p class="hint">On desktop, you may close this tab and return to JobMail.</p>
   </main>
 </body>
 </html>"""

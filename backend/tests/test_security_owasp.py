@@ -14,7 +14,7 @@ from app.authentication.encryption import TokenEncryptor, rotate_document_fields
 from app.authentication.google_oauth import GoogleOAuthClient, REQUIRED_GMAIL_SCOPE
 from app.authentication.security import verify_password
 from app.core.config import Settings, get_settings
-from app.core.logging import SensitiveDataFilter, mask_email
+from app.core.logging import SensitiveDataFilter, mask_email, sanitize_mongodb_uri
 from app.main import create_app
 from app.models.enums import AccountSyncStatus, EmailCategory
 from app.services.classification_service import ClassificationService
@@ -654,12 +654,40 @@ async def test_privacy_export_retention_purge_disconnect_and_account_deletion(
 
 
 def test_production_config_rejects_localhost_cors_and_missing_secrets():
+    atlas_uri = "mongodb+srv://dbuser:dbpass@cluster0.example.mongodb.net/?retryWrites=true&w=majority"
+    fernet_key = Fernet.generate_key().decode("ascii")
+
+    with pytest.raises(ValueError, match="MONGODB_URI"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            mongodb_uri="",
+            jwt_secret_key="s" * 40,
+            token_encryption_key=fernet_key,
+            google_redirect_uri="https://api.jobmail.example/auth/google/callback",
+            frontend_url="https://app.jobmail.example",
+            cors_origins="https://app.jobmail.example",
+        )
+
     with pytest.raises(ValueError, match="localhost"):
         Settings(
             _env_file=None,
             environment="production",
+            mongodb_uri="mongodb://localhost:27017",
             jwt_secret_key="s" * 40,
-            token_encryption_key=Fernet.generate_key().decode("ascii"),
+            token_encryption_key=fernet_key,
+            google_redirect_uri="https://api.jobmail.example/auth/google/callback",
+            frontend_url="https://app.jobmail.example",
+            cors_origins="https://app.jobmail.example",
+        )
+
+    with pytest.raises(ValueError, match="localhost"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            mongodb_uri=atlas_uri,
+            jwt_secret_key="s" * 40,
+            token_encryption_key=fernet_key,
             google_redirect_uri="http://localhost:8000/auth/google/callback",
             frontend_url="https://app.jobmail.example",
             cors_origins="https://app.jobmail.example",
@@ -669,8 +697,9 @@ def test_production_config_rejects_localhost_cors_and_missing_secrets():
         Settings(
             _env_file=None,
             environment="production",
+            mongodb_uri=atlas_uri,
             jwt_secret_key="replace-with-strong-random-secret",
-            token_encryption_key=Fernet.generate_key().decode("ascii"),
+            token_encryption_key=fernet_key,
             google_redirect_uri="https://api.jobmail.example/auth/google/callback",
             frontend_url="https://app.jobmail.example",
             cors_origins="https://app.jobmail.example",
@@ -680,8 +709,10 @@ def test_production_config_rejects_localhost_cors_and_missing_secrets():
         Settings(
             _env_file=None,
             environment="production",
+            mongodb_uri=f" '{atlas_uri}' ",
+            mongodb_db_name=" jobmail_prod ",
             jwt_secret_key="p" * 40,
-            token_encryption_key=Fernet.generate_key().decode("ascii"),
+            token_encryption_key=fernet_key,
             google_redirect_uri="https://api.jobmail.example/auth/google/callback",
             frontend_url="https://app.jobmail.example",
             cors_origins="https://app.jobmail.example",
@@ -689,3 +720,22 @@ def test_production_config_rejects_localhost_cors_and_missing_secrets():
     )
     assert prod_app.docs_url is None
     assert prod_app.openapi_url is None
+
+    # Ensure MongoDB URI credentials are never exposed in logs or diagnostics
+    redacted_msg = sanitize_mongodb_uri(atlas_uri)
+    assert "dbpass" not in redacted_msg
+    assert "dbuser" not in redacted_msg
+    assert "cluster0.example.mongodb.net" in redacted_msg
+
+    record = logging.LogRecord(
+        name="jobmail.test",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="DB error on %s",
+        args=(atlas_uri,),
+        exc_info=None,
+    )
+    SensitiveDataFilter().filter(record)
+    assert "dbpass" not in record.getMessage()
+    assert "[REDACTED]" in record.getMessage()

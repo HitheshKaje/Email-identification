@@ -1,4 +1,4 @@
-package com.example.jobmail
+package com.jobmail.app
 
 import io.flutter.embedding.android.FlutterActivity
 

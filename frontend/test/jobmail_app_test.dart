@@ -12,6 +12,7 @@ import 'package:jobmail/models/user_profile.dart';
 import 'package:jobmail/screens/splash_screen.dart';
 import 'package:jobmail/services/jobmail_repository.dart';
 import 'package:jobmail/services/preferences_service.dart';
+import 'package:jobmail/utils/api_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Test-only in-memory repository so UI behavior can be verified cleanly
@@ -195,7 +196,8 @@ class FakeJobMailRepository implements JobMailRepository {
   @override
   Future<MfaSetupInfo> setupMfa() async => const MfaSetupInfo(
         secret: 'JBSWY3DPEHPK3PXP',
-        provisioningUri: 'otpauth://totp/JobMail:candidate@example.com?secret=JBSWY3DPEHPK3PXP',
+        provisioningUri:
+            'otpauth://totp/JobMail:candidate@example.com?secret=JBSWY3DPEHPK3PXP',
         recoveryCodes: <String>['ABCD-1234', 'EFGH-5678'],
       );
 
@@ -498,7 +500,8 @@ void main() {
     // Switch to Inbox tab (excludes OTHER electricity bill)
     await tester.tap(find.text('Inbox'));
     await tester.pumpAndSettle();
-    expect(find.text('Python Developer Internship Opportunity'), findsOneWidget);
+    expect(
+        find.text('Python Developer Internship Opportunity'), findsOneWidget);
     expect(find.text('Electricity bill ready'), findsNothing);
 
     // Switch to Categories tab
@@ -523,5 +526,18 @@ void main() {
     expect(find.text('Theme Mode'), findsOneWidget);
     await tester.tap(find.text('Dark'));
     await tester.pumpAndSettle();
+  });
+
+  test('ApiConfig enforces HTTPS publicly while allowing local dev and LAN IPs',
+      () {
+    expect(ApiConfig.isValidEndpointUrl('https://api.jobmail.app'), isTrue);
+    expect(ApiConfig.isValidEndpointUrl('http://localhost:8000'), isTrue);
+    expect(ApiConfig.isValidEndpointUrl('http://10.0.2.2:8000'), isTrue);
+    expect(ApiConfig.isValidEndpointUrl('http://192.168.1.6:8000'), isTrue);
+    expect(ApiConfig.isValidEndpointUrl('http://10.0.0.15:8000'), isTrue);
+    expect(ApiConfig.isValidEndpointUrl('http://172.16.5.20:8000'), isTrue);
+    expect(ApiConfig.isValidEndpointUrl('http://example.com:8000'), isFalse);
+    expect(ApiConfig.isValidEndpointUrl('http://8.8.8.8:8000'), isFalse);
+    expect(ApiConfig.isValidEndpointUrl('ftp://192.168.1.6:8000'), isFalse);
   });
 }
