@@ -1,6 +1,7 @@
 """Centralized environment-based application settings with production safety validation."""
 
 from functools import lru_cache
+import json
 import logging
 import os
 from pathlib import Path
@@ -13,6 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger("jobmail.config")
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+PRODUCTION_FRONTEND_ORIGIN = "https://email-identification-frontend.vercel.app"
+_DEFAULT_DEV_CORS_ORIGINS = {"http://localhost:8080", "http://127.0.0.1:8080"}
 
 _PLACEHOLDER_SECRETS = {
     "",
@@ -29,11 +32,55 @@ _PLACEHOLDER_SECRETS = {
 _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 
 
+def _is_render_runtime() -> bool:
+    return (
+        os.environ.get("RENDER", "").strip().lower() == "true"
+        or bool(os.environ.get("RENDER_EXTERNAL_URL", "").strip())
+    )
+
+
 def _strip_matching_quotes(value: str) -> str:
     cleaned = value.strip()
     if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {'"', "'"}:
         return cleaned[1:-1].strip()
     return cleaned
+
+
+def _normalize_origin(raw: str) -> str:
+    cleaned = _strip_matching_quotes(raw).rstrip("/")
+    if not cleaned or cleaned == "*":
+        return cleaned
+    parsed = urlparse(cleaned)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    return cleaned
+
+
+def _parse_origin_list(raw: str) -> list[str]:
+    cleaned = _strip_matching_quotes(raw)
+    if not cleaned:
+        return []
+    candidates: list[str]
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        try:
+            decoded = json.loads(cleaned)
+            if isinstance(decoded, list):
+                candidates = [str(item) for item in decoded]
+            else:
+                candidates = cleaned.split(",")
+        except json.JSONDecodeError:
+            candidates = cleaned.strip("[]").split(",")
+    else:
+        candidates = cleaned.split(",")
+
+    seen: set[str] = set()
+    origins: list[str] = []
+    for part in candidates:
+        origin = _normalize_origin(part)
+        if origin and origin not in seen:
+            seen.add(origin)
+            origins.append(origin)
+    return origins
 
 
 def _parse_key_list(raw: str) -> list[str]:
@@ -197,6 +244,16 @@ class Settings(BaseSettings):
     def _normalize_mongo_fields(cls, value: str) -> str:
         return _strip_matching_quotes(value)
 
+    @field_validator("frontend_url")
+    @classmethod
+    def _normalize_frontend_url(cls, value: str) -> str:
+        return _normalize_origin(value)
+
+    @field_validator("cors_origins")
+    @classmethod
+    def _normalize_cors_origins(cls, value: str) -> str:
+        return _strip_matching_quotes(value)
+
     @field_validator("environment")
     @classmethod
     def _normalize_environment(cls, value: str) -> str:
@@ -226,11 +283,7 @@ class Settings(BaseSettings):
                 "MONGODB_URI must start with 'mongodb://' or 'mongodb+srv://'."
             )
 
-        is_render = (
-            os.environ.get("RENDER", "").strip().lower() == "true"
-            or bool(os.environ.get("RENDER_EXTERNAL_URL", "").strip())
-        )
-        if is_render and self.mongodb_uri and _has_localhost_mongodb(self.mongodb_uri):
+        if _is_render_runtime() and self.mongodb_uri and _has_localhost_mongodb(self.mongodb_uri):
             raise ValueError(
                 "Render environment variable MONGODB_URI is pointing to localhost "
                 "(e.g. mongodb://localhost:27017). Update MONGODB_URI in Render Dashboard -> "
@@ -270,8 +323,8 @@ class Settings(BaseSettings):
                 self.token_encryption_key = keys[0]
 
         if is_prod:
-            # On Render, automatically derive HTTPS callback/CORS defaults from RENDER_EXTERNAL_URL
-            # when only local dev defaults are present and not explicitly overridden.
+            # On Render, automatically derive strict HTTPS defaults when only local dev
+            # template values are present and not explicitly overridden.
             render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
             if render_url.startswith("https://"):
                 if (
@@ -283,7 +336,7 @@ class Settings(BaseSettings):
                     self.frontend_url == "http://localhost:8080"
                     and "FRONTEND_URL" not in os.environ
                 ):
-                    self.frontend_url = render_url
+                    self.frontend_url = PRODUCTION_FRONTEND_ORIGIN
                 if (
                     self.cors_origins == "http://localhost:8080,http://127.0.0.1:8080"
                     and "CORS_ORIGINS" not in os.environ
@@ -328,11 +381,15 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [
-            origin.strip()
-            for origin in self.cors_origins.split(",")
-            if origin.strip()
-        ]
+        origins = _parse_origin_list(self.cors_origins)
+        frontend = _normalize_origin(self.frontend_url)
+        if frontend and frontend != "*" and frontend not in origins:
+            if not (self.is_production and _has_localhost(frontend)):
+                origins.append(frontend)
+        if _is_render_runtime() and set(origins).issubset(_DEFAULT_DEV_CORS_ORIGINS):
+            if PRODUCTION_FRONTEND_ORIGIN not in origins:
+                origins.append(PRODUCTION_FRONTEND_ORIGIN)
+        return origins
 
     @property
     def trusted_host_list(self) -> list[str]:

@@ -769,8 +769,38 @@ def test_render_external_url_derives_safe_https_defaults_and_aggregates_errors(m
         render_cfg.google_redirect_uri
         == "https://jobmail-backend-tzwt.onrender.com/auth/google/callback"
     )
-    assert render_cfg.frontend_url == "https://jobmail-backend-tzwt.onrender.com"
-    assert render_cfg.cors_origin_list == ["https://jobmail-backend-tzwt.onrender.com"]
+    assert render_cfg.frontend_url == "https://email-identification-frontend.vercel.app"
+    assert render_cfg.cors_origin_list == [
+        "https://email-identification-frontend.vercel.app"
+    ]
+
+    # Quotes, trailing slashes, and JSON list syntax in CORS_ORIGINS / FRONTEND_URL normalize cleanly
+    quoted_cfg = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri=atlas_uri,
+        jwt_secret_key="q" * 40,
+        token_encryption_key=fernet_key,
+        google_redirect_uri="https://jobmail-backend-tzwt.onrender.com/auth/google/callback",
+        frontend_url='"https://email-identification-frontend.vercel.app/"',
+        cors_origins='"https://email-identification-frontend.vercel.app/"',
+    )
+    assert quoted_cfg.cors_origin_list == [
+        "https://email-identification-frontend.vercel.app"
+    ]
+
+    # Wildcard '*' in CORS_ORIGINS is strictly rejected in production
+    with pytest.raises(ValueError, match="wildcard"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            mongodb_uri=atlas_uri,
+            jwt_secret_key="w" * 40,
+            token_encryption_key=fernet_key,
+            google_redirect_uri="https://jobmail-backend-tzwt.onrender.com/auth/google/callback",
+            frontend_url="https://email-identification-frontend.vercel.app",
+            cors_origins="*",
+        )
 
     # Even if ENVIRONMENT=development on Render, localhost MONGODB_URI is rejected clearly
     monkeypatch.setenv("RENDER", "true")

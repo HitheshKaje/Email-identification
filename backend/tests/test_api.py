@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 from cryptography.fernet import Fernet
+from httpx import ASGITransport, AsyncClient
 import pytest
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from app.authentication.encryption import TokenEncryptor
+from app.api.deps import get_db
 from app.core.config import Settings
 from app.database.mongodb import MongoDatabaseManager, db_manager
 from app.main import create_app
@@ -400,3 +402,134 @@ async def test_health_returns_503_safely_when_ping_fails(client, monkeypatch):
     failing_manager.client = object()  # type: ignore[assignment]
     failing_manager.db = _BrokenDb()  # type: ignore[assignment]
     assert await failing_manager.ping() is False
+
+
+@pytest.mark.asyncio
+async def test_cors_preflight_register_and_error_responses_for_vercel():
+    vercel_origin = "https://email-identification-frontend.vercel.app"
+    fernet_key = Fernet.generate_key().decode("ascii")
+
+    # 1. Production CORS preflight & error headers without wildcard
+    prod_settings = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri="mongodb+srv://user:pass@cluster0.example.mongodb.net/?retryWrites=true&w=majority",
+        mongodb_db_name="jobmail_prod",
+        jwt_secret_key="c" * 40,
+        token_encryption_key=fernet_key,
+        google_redirect_uri="https://jobmail-backend-tzwt.onrender.com/auth/google/callback",
+        frontend_url=vercel_origin,
+        cors_origins=vercel_origin,
+        cookie_secure=True,
+        cookie_samesite="none",
+        max_request_body_bytes=16384,
+    )
+    prod_app = create_app(prod_settings)
+    prod_transport = ASGITransport(app=prod_app)
+    async with AsyncClient(transport=prod_transport, base_url="http://testserver") as pac:
+        preflight = await pac.options(
+            "/auth/register",
+            headers={
+                "Origin": vercel_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type, Authorization",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers.get("access-control-allow-origin") == vercel_origin
+        assert preflight.headers.get("access-control-allow-credentials") == "true"
+        allowed_methods = preflight.headers.get("access-control-allow-methods", "")
+        for method in ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            assert method in allowed_methods
+
+        # Disallowed origin is rejected cleanly and never falls back to '*'
+        disallowed = await pac.options(
+            "/auth/register",
+            headers={
+                "Origin": "https://untrusted.example",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert disallowed.status_code == 400
+        assert "access-control-allow-origin" not in disallowed.headers
+
+        # Unhandled internal error (500, e.g., uninitialized DB) still includes CORS headers
+        err_500 = await pac.post(
+            "/auth/register",
+            headers={"Origin": vercel_origin},
+            json={
+                "name": "Err User",
+                "email": "err500@example.com",
+                "password": "StrongPassword123!",
+            },
+        )
+        assert err_500.status_code == 500
+        assert err_500.headers.get("access-control-allow-origin") == vercel_origin
+        assert err_500.headers.get("access-control-allow-credentials") == "true"
+
+        # Validation error (422) still preserves CORS headers
+        prod_app.dependency_overrides[get_db] = lambda: object()
+        bad_payload = await pac.post(
+            "/auth/register",
+            headers={"Origin": vercel_origin},
+            json={"email": "invalid"},
+        )
+        prod_app.dependency_overrides.clear()
+        assert bad_payload.status_code == 422
+        assert bad_payload.headers.get("access-control-allow-origin") == vercel_origin
+        assert bad_payload.headers.get("access-control-allow-credentials") == "true"
+
+        # RequestSizeLimitMiddleware (413) error still carries CORS headers (outermost middleware)
+        oversized = await pac.post(
+            "/auth/register",
+            headers={"Origin": vercel_origin, "Content-Type": "application/json"},
+            content=b'{"name":"' + (b"x" * 20000) + b'"}',
+        )
+        assert oversized.status_code == 413
+        assert oversized.headers.get("access-control-allow-origin") == vercel_origin
+        assert oversized.headers.get("access-control-allow-credentials") == "true"
+
+    # 2. Full /auth/register (201) + duplicate conflict (409) with CORS + SameSite=none cookies
+    reg_settings = Settings(
+        _env_file=None,
+        environment="staging",
+        mongodb_uri="mongodb://localhost:27017",
+        mongodb_db_name="jobmail_test",
+        jwt_secret_key="r" * 40,
+        token_encryption_key=fernet_key,
+        frontend_url=vercel_origin,
+        cors_origins=vercel_origin,
+        cookie_secure=True,
+        cookie_samesite="none",
+        auto_sync_enabled=False,
+    )
+    reg_app = create_app(reg_settings)
+    async with reg_app.router.lifespan_context(reg_app):
+        await db_manager.db["users"].delete_many({"email": "cors.vercel@example.com"})
+        reg_transport = ASGITransport(app=reg_app)
+        async with AsyncClient(transport=reg_transport, base_url="http://testserver") as rac:
+            created = await rac.post(
+                "/auth/register",
+                headers={"Origin": vercel_origin},
+                json={
+                    "name": "Vercel User",
+                    "email": "cors.vercel@example.com",
+                    "password": "StrongPassword123!",
+                },
+            )
+            assert created.status_code == 201
+            assert created.headers.get("access-control-allow-origin") == vercel_origin
+            assert created.headers.get("access-control-allow-credentials") == "true"
+
+            duplicate = await rac.post(
+                "/auth/register",
+                headers={"Origin": vercel_origin},
+                json={
+                    "name": "Vercel User",
+                    "email": "cors.vercel@example.com",
+                    "password": "StrongPassword123!",
+                },
+            )
+            assert duplicate.status_code == 409
+            assert duplicate.headers.get("access-control-allow-origin") == vercel_origin
+        await db_manager.db["users"].delete_many({"email": "cors.vercel@example.com"})

@@ -1,6 +1,7 @@
 """JobMail FastAPI application factory with security headers, payload caps, CORS, and lifespan."""
 
 from contextlib import asynccontextmanager
+import logging
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -123,6 +124,45 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+class UnhandledExceptionMiddleware:
+    """Return sanitized 500 JSON inside CORSMiddleware so browsers still receive CORS headers."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def tracked_send(message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracked_send)
+        except Exception as exc:
+            if response_started:
+                raise
+            request_id = (scope.get("state") or {}).get("request_id", "unknown")
+            logging.getLogger("jobmail.exceptions").error(
+                "[%s] Unhandled error on %s %s: %s",
+                request_id,
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+                type(exc).__name__,
+            )
+            resp = JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": "An internal server error occurred."},
+            )
+            await resp(scope, receive, send)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
     resolved_settings = settings or get_settings()
@@ -155,11 +195,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=openapi_url,
     )
 
+    # Register innermost middlewares first; CORSMiddleware is added LAST (outermost)
+    # so OPTIONS preflight requests and error responses (including 413/4xx/500) always
+    # carry the appropriate Access-Control-* headers.
+    register_exception_handlers(app)
+    app.add_middleware(UnhandledExceptionMiddleware)
+
     if resolved_settings.trusted_host_list:
         app.add_middleware(
             TrustedHostMiddleware,
             allowed_hosts=resolved_settings.trusted_host_list,
         )
+
+    app.add_middleware(SecurityHeadersMiddleware, settings=resolved_settings)
+    app.add_middleware(
+        RequestSizeLimitMiddleware, max_bytes=resolved_settings.max_request_body_bytes
+    )
+    app.add_middleware(RequestLoggingMiddleware)
 
     allow_origin_regex = (
         r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
@@ -171,21 +223,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=resolved_settings.cors_origin_list,
         allow_origin_regex=allow_origin_regex,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=[
             "Authorization",
             "Content-Type",
             "Accept",
+            "Origin",
             "X-CSRF-Token",
             "X-Request-ID",
+            "X-Requested-With",
         ],
     )
-    app.add_middleware(SecurityHeadersMiddleware, settings=resolved_settings)
-    app.add_middleware(
-        RequestSizeLimitMiddleware, max_bytes=resolved_settings.max_request_body_bytes
-    )
-    app.add_middleware(RequestLoggingMiddleware)
-    register_exception_handlers(app)
 
     @app.get("/health", response_model=HealthResponse, tags=["Health"])
     async def health_check() -> JSONResponse:
