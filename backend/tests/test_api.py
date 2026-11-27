@@ -8,7 +8,7 @@ import pytest
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from app.authentication.encryption import TokenEncryptor
 from app.api.deps import get_db
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.database.mongodb import MongoDatabaseManager, db_manager
 from app.main import create_app
 from app.models.enums import AccountSyncStatus, EmailCategory
@@ -575,6 +575,7 @@ async def test_dashboard_recent_emails_cors_preflight_resilience_and_error_heade
     assert multi_cfg.cors_origin_list == [vercel_origin, "https://admin.jobmail.example"]
 
     # Production CORS behavior on /dashboard/recent-emails?limit=8 (preflight, 401, 200, malformed doc, 500)
+    monkeypatch.delenv("RENDER", raising=False)
     dash_settings = Settings(
         _env_file=None,
         environment="staging",
@@ -589,6 +590,7 @@ async def test_dashboard_recent_emails_cors_preflight_resilience_and_error_heade
         auto_sync_enabled=False,
     )
     dash_app = create_app(dash_settings)
+    dash_app.dependency_overrides[get_settings] = lambda: dash_settings
     async with dash_app.router.lifespan_context(dash_app):
         db = db_manager.db
         await db.users.delete_many({"email": "dash.cors@example.com"})
@@ -664,7 +666,7 @@ async def test_dashboard_recent_emails_cors_preflight_resilience_and_error_heade
                 "/dashboard/recent-emails?limit=8",
                 headers={"Origin": vercel_origin, "Authorization": f"Bearer {token}"},
             )
-            dash_app.dependency_overrides.clear()
+            dash_app.dependency_overrides.pop(get_db, None)
             assert err_resp.status_code == 500
             assert err_resp.headers.get("access-control-allow-origin") == vercel_origin
             assert err_resp.headers.get("access-control-allow-credentials") == "true"
