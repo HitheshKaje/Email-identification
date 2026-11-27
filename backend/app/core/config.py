@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 import logging
+import os
 from pathlib import Path
 import secrets
 from urllib.parse import urlparse
@@ -214,6 +215,7 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: object) -> None:
         is_prod = self.is_production
+        prod_errors: list[str] = []
 
         if not self.mongodb_db_name:
             raise ValueError("MONGODB_DB_NAME must be configured to a non-empty database name.")
@@ -228,26 +230,28 @@ class Settings(BaseSettings):
             is_prod and len(self.jwt_secret_key.strip()) < 32
         ):
             if is_prod:
-                raise ValueError(
+                prod_errors.append(
                     "JWT_SECRET_KEY must be set to a strong >=32-char secret in production."
                 )
-            self.jwt_secret_key = secrets.token_urlsafe(48)
-            logger.warning(
-                "Using ephemeral development JWT_SECRET_KEY; set JWT_SECRET_KEY in .env for persistent tokens."
-            )
+            else:
+                self.jwt_secret_key = secrets.token_urlsafe(48)
+                logger.warning(
+                    "Using ephemeral development JWT_SECRET_KEY; set JWT_SECRET_KEY in .env for persistent tokens."
+                )
 
         keys = self.encryption_key_list
         if not keys:
             if is_prod:
-                raise ValueError(
+                prod_errors.append(
                     "TOKEN_ENCRYPTION_KEY or TOKEN_ENCRYPTION_KEYS must be set to valid Fernet key(s) in production."
                 )
-            generated = Fernet.generate_key().decode("ascii")
-            self.token_encryption_key = generated
-            self.token_encryption_keys = generated
-            logger.warning(
-                "Using ephemeral development TOKEN_ENCRYPTION_KEY; set TOKEN_ENCRYPTION_KEY in .env for persistence."
-            )
+            else:
+                generated = Fernet.generate_key().decode("ascii")
+                self.token_encryption_key = generated
+                self.token_encryption_keys = generated
+                logger.warning(
+                    "Using ephemeral development TOKEN_ENCRYPTION_KEY; set TOKEN_ENCRYPTION_KEY in .env for persistence."
+                )
         else:
             for key in keys:
                 _validate_fernet_key(key)
@@ -255,35 +259,60 @@ class Settings(BaseSettings):
                 self.token_encryption_key = keys[0]
 
         if is_prod:
+            # On Render, automatically derive HTTPS callback/CORS defaults from RENDER_EXTERNAL_URL
+            # when only local dev defaults are present and not explicitly overridden.
+            render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+            if render_url.startswith("https://"):
+                if (
+                    self.google_redirect_uri == "http://localhost:8000/auth/google/callback"
+                    and "GOOGLE_REDIRECT_URI" not in os.environ
+                ):
+                    self.google_redirect_uri = f"{render_url}/auth/google/callback"
+                if (
+                    self.frontend_url == "http://localhost:8080"
+                    and "FRONTEND_URL" not in os.environ
+                ):
+                    self.frontend_url = render_url
+                if (
+                    self.cors_origins == "http://localhost:8080,http://127.0.0.1:8080"
+                    and "CORS_ORIGINS" not in os.environ
+                ):
+                    self.cors_origins = self.frontend_url.rstrip("/")
+
             if not self.mongodb_uri or self.mongodb_uri in _PLACEHOLDER_SECRETS:
-                raise ValueError(
+                prod_errors.append(
                     "MONGODB_URI environment variable is required in production and must point to MongoDB Atlas."
                 )
-            if _has_localhost_mongodb(self.mongodb_uri):
-                raise ValueError(
+            elif _has_localhost_mongodb(self.mongodb_uri):
+                prod_errors.append(
                     "MONGODB_URI must not target localhost in production; configure your MongoDB Atlas URI."
                 )
             if self.debug:
-                raise ValueError("DEBUG must be false in production.")
+                prod_errors.append("DEBUG must be false in production.")
             if _has_localhost(self.google_redirect_uri):
-                raise ValueError(
+                prod_errors.append(
                     "GOOGLE_REDIRECT_URI must use your public HTTPS domain in production (no localhost)."
                 )
+            elif not self.google_redirect_uri.startswith("https://"):
+                prod_errors.append(
+                    "GOOGLE_REDIRECT_URI must use HTTPS in production."
+                )
             if _has_localhost(self.frontend_url):
-                raise ValueError(
+                prod_errors.append(
                     "FRONTEND_URL must not use localhost in production."
                 )
             if any(_has_localhost(origin) for origin in self.cors_origin_list):
-                raise ValueError(
+                prod_errors.append(
                     "CORS_ORIGINS must not allow localhost origins in production."
                 )
             if "*" in self.cors_origin_list:
-                raise ValueError(
+                prod_errors.append(
                     "CORS_ORIGINS cannot use wildcard '*' in production."
                 )
-            if not self.google_redirect_uri.startswith("https://"):
+
+            if prod_errors:
                 raise ValueError(
-                    "GOOGLE_REDIRECT_URI must use HTTPS in production."
+                    "Production configuration error(s):\n- " + "\n- ".join(prod_errors)
                 )
 
     @property

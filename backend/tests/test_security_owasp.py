@@ -739,3 +739,35 @@ def test_production_config_rejects_localhost_cors_and_missing_secrets():
     SensitiveDataFilter().filter(record)
     assert "dbpass" not in record.getMessage()
     assert "[REDACTED]" in record.getMessage()
+
+
+def test_render_external_url_derives_safe_https_defaults_and_aggregates_errors(monkeypatch):
+    atlas_uri = "mongodb+srv://dbuser:dbpass@cluster0.example.mongodb.net/?retryWrites=true&w=majority"
+    fernet_key = Fernet.generate_key().decode("ascii")
+
+    # Aggregated production validation lists every missing variable cleanly
+    with pytest.raises(ValueError) as exc_info:
+        Settings(_env_file=None, environment="production")
+    msg = str(exc_info.value)
+    assert "MONGODB_URI" in msg
+    assert "JWT_SECRET_KEY" in msg
+    assert "TOKEN_ENCRYPTION_KEY" in msg
+
+    # Render injects RENDER_EXTERNAL_URL automatically; defaults become strict HTTPS
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://jobmail-backend-tzwt.onrender.com")
+    monkeypatch.delenv("GOOGLE_REDIRECT_URI", raising=False)
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    render_cfg = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri=atlas_uri,
+        jwt_secret_key="r" * 40,
+        token_encryption_key=fernet_key,
+    )
+    assert (
+        render_cfg.google_redirect_uri
+        == "https://jobmail-backend-tzwt.onrender.com/auth/google/callback"
+    )
+    assert render_cfg.frontend_url == "https://jobmail-backend-tzwt.onrender.com"
+    assert render_cfg.cors_origin_list == ["https://jobmail-backend-tzwt.onrender.com"]
