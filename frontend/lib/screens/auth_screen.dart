@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import '../providers/app_settings_provider.dart';
 import '../services/api_exceptions.dart';
 import '../theme/app_colors.dart';
-import '../utils/api_config.dart';
 import '../widgets/jobmail_logo.dart';
 import '../widgets/main_navigation_shell.dart';
 
@@ -252,51 +251,6 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  Future<void> _editServerUrl(AppSettingsProvider settings) async {
-    final controller = TextEditingController(text: settings.apiBaseUrl);
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Backend Server URL'),
-          content: TextField(
-            controller: controller,
-            keyboardType: TextInputType.url,
-            decoration: InputDecoration(
-              labelText: 'API Base URL',
-              hintText: ApiConfig.endpointHint,
-            ),
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-    if (saved == true && mounted) {
-      final ok = await settings.updateApiBaseUrl(controller.text);
-      if (!ok && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              ApiConfig.allowLocalHttpInCurrentBuild
-                  ? 'Invalid URL. Use HTTPS or a local LAN/loopback HTTP address.'
-                  : 'Invalid URL. Release builds require an HTTPS backend URL.',
-            ),
-          ),
-        );
-      }
-    }
-    controller.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettingsProvider>();
@@ -473,33 +427,6 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 14),
-                  if (ApiConfig.canCustomizeApiUrl)
-                    TextButton.icon(
-                      onPressed: () => _editServerUrl(settings),
-                      icon: const Icon(Icons.dns_outlined, size: 16),
-                      label: Text('Server: ${settings.apiBaseUrl}'),
-                    )
-                  else
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: <Widget>[
-                        Icon(
-                          Icons.dns_outlined,
-                          size: 16,
-                          color: Theme.of(context).textTheme.bodySmall?.color,
-                        ),
-                        const SizedBox(width: 6),
-                        Flexible(
-                          child: Text(
-                            'Server: ${settings.apiBaseUrl}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      ],
-                    ),
                 ],
               ),
             ),

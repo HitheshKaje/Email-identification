@@ -625,7 +625,7 @@ void main() {
     );
   });
 
-  testWidgets('AuthScreen displays actual configured production API Server URL',
+  testWidgets('AuthScreen hides backend Server URL footer from login page',
       (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'jobmail_onboarding_done': true,
@@ -651,8 +651,9 @@ void main() {
     expect(find.text('Welcome to JobMail'), findsOneWidget);
     expect(
       find.text('Server: https://jobmail-backend-tzwt.onrender.com'),
-      findsOneWidget,
+      findsNothing,
     );
+    expect(prefs.apiBaseUrl, 'https://jobmail-backend-tzwt.onrender.com');
   });
 
   test('AccountsProvider deduplicates concurrent Google OAuth connect calls',
