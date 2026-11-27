@@ -1,6 +1,7 @@
 """End-to-end API, authentication, authorization, and MongoDB tests for Phase 2."""
 
 from datetime import datetime, timezone
+from bson import ObjectId
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -533,3 +534,141 @@ async def test_cors_preflight_register_and_error_responses_for_vercel():
             assert duplicate.status_code == 409
             assert duplicate.headers.get("access-control-allow-origin") == vercel_origin
         await db_manager.db["users"].delete_many({"email": "cors.vercel@example.com"})
+
+
+@pytest.mark.asyncio
+async def test_dashboard_recent_emails_cors_preflight_resilience_and_error_headers(
+    monkeypatch,
+):
+    vercel_origin = "https://email-identification-frontend.vercel.app"
+    fernet_key = Fernet.generate_key().decode("ascii")
+
+    # Verify Render production runtime resolves exact Vercel origin without wildcard
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    prod_render_cfg = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri="mongodb+srv://user:pass@cluster0.example.mongodb.net/?retryWrites=true&w=majority",
+        mongodb_db_name="jobmail_prod",
+        jwt_secret_key="m" * 40,
+        token_encryption_key=fernet_key,
+        google_redirect_uri="https://jobmail-backend-tzwt.onrender.com/auth/google/callback",
+    )
+    assert prod_render_cfg.cors_origin_list == [vercel_origin]
+    assert "*" not in prod_render_cfg.cors_origin_list
+
+    # Multi-origin whitespace/comma parsing normalizes cleanly
+    multi_cfg = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri="mongodb+srv://user:pass@cluster0.example.mongodb.net/?retryWrites=true&w=majority",
+        mongodb_db_name="jobmail_prod",
+        jwt_secret_key="m" * 40,
+        token_encryption_key=fernet_key,
+        google_redirect_uri="https://jobmail-backend-tzwt.onrender.com/auth/google/callback",
+        frontend_url=vercel_origin,
+        cors_origins=f' "{vercel_origin}/"  https://admin.jobmail.example/ ',
+    )
+    assert multi_cfg.cors_origin_list == [vercel_origin, "https://admin.jobmail.example"]
+
+    # Production CORS behavior on /dashboard/recent-emails?limit=8 (preflight, 401, 200, malformed doc, 500)
+    dash_settings = Settings(
+        _env_file=None,
+        environment="staging",
+        mongodb_uri="mongodb://localhost:27017",
+        mongodb_db_name="jobmail_test",
+        jwt_secret_key="d" * 40,
+        token_encryption_key=fernet_key,
+        frontend_url=vercel_origin,
+        cors_origins=vercel_origin,
+        cookie_secure=True,
+        cookie_samesite="none",
+        auto_sync_enabled=False,
+    )
+    dash_app = create_app(dash_settings)
+    async with dash_app.router.lifespan_context(dash_app):
+        db = db_manager.db
+        await db.users.delete_many({"email": "dash.cors@example.com"})
+        async with AsyncClient(
+            transport=ASGITransport(app=dash_app), base_url="http://testserver"
+        ) as dac:
+            preflight = await dac.options(
+                "/dashboard/recent-emails?limit=8",
+                headers={
+                    "Origin": vercel_origin,
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type, X-CSRF-Token",
+                },
+            )
+            assert preflight.status_code == 200
+            assert preflight.headers.get("access-control-allow-origin") == vercel_origin
+            assert preflight.headers.get("access-control-allow-credentials") == "true"
+
+            # Unauthenticated 401 preserves CORS headers
+            unauth = await dac.get(
+                "/dashboard/recent-emails?limit=8",
+                headers={"Origin": vercel_origin},
+            )
+            assert unauth.status_code == 401
+            assert unauth.headers.get("access-control-allow-origin") == vercel_origin
+            assert unauth.headers.get("access-control-allow-credentials") == "true"
+
+            reg = await dac.post(
+                "/auth/register",
+                headers={"Origin": vercel_origin},
+                json={
+                    "name": "Dash User",
+                    "email": "dash.cors@example.com",
+                    "password": "StrongPassword123!",
+                },
+            )
+            assert reg.status_code == 201
+            token = reg.json()["access_token"]
+            uid = reg.json()["user"]["id"]
+
+            # Legacy/malformed MongoDB doc (ObjectId account_id, lowercase category, clamped confidence)
+            # must NOT crash /dashboard/recent-emails with 500
+            encryptor = TokenEncryptor(fernet_key)
+            await db.emails.insert_one(
+                {
+                    "user_id": uid,
+                    "account_id": ObjectId(),
+                    "gmail_message_id": "msg-legacy-1",
+                    "encrypted_sender": encryptor.encrypt("Recruiter <hr@acme.com>"),
+                    "encrypted_subject": encryptor.encrypt("Interview Invite"),
+                    "encrypted_body_preview": encryptor.encrypt("Interview next week"),
+                    "received_at": datetime.now(timezone.utc),
+                    "category": "interview",
+                    "confidence": 1.25,
+                    "is_read": False,
+                }
+            )
+            ok_resp = await dac.get(
+                "/dashboard/recent-emails?limit=8",
+                headers={"Origin": vercel_origin, "Authorization": f"Bearer {token}"},
+            )
+            assert ok_resp.status_code == 200
+            assert ok_resp.headers.get("access-control-allow-origin") == vercel_origin
+            assert ok_resp.headers.get("access-control-allow-credentials") == "true"
+            assert ok_resp.json()["total"] == 1
+            assert ok_resp.json()["items"][0]["category"] == "INTERVIEW"
+            assert ok_resp.json()["items"][0]["confidence"] == 1.0
+
+            # Even if DB fails completely inside /dashboard/recent-emails (500),
+            # UnhandledExceptionMiddleware inside CORSMiddleware preserves CORS headers!
+            dash_app.dependency_overrides[get_db] = lambda: object()
+            err_resp = await dac.get(
+                "/dashboard/recent-emails?limit=8",
+                headers={"Origin": vercel_origin, "Authorization": f"Bearer {token}"},
+            )
+            dash_app.dependency_overrides.clear()
+            assert err_resp.status_code == 500
+            assert err_resp.headers.get("access-control-allow-origin") == vercel_origin
+            assert err_resp.headers.get("access-control-allow-credentials") == "true"
+
+            await db.emails.delete_many({"user_id": uid})
+            await db.sessions.delete_many({"user_id": uid})
+            await db.users.delete_many({"email": "dash.cors@example.com"})

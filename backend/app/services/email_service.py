@@ -1,6 +1,7 @@
 """User-isolated recruitment email query, encrypted field decryption, search, and read-status services."""
 
-from datetime import datetime
+from datetime import datetime, timezone
+import math
 from typing import Any
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -32,6 +33,41 @@ def _decrypt_field(
     return str(raw)
 
 
+def _coerce_category(raw: object) -> EmailCategory:
+    if isinstance(raw, EmailCategory):
+        return raw
+    if isinstance(raw, str):
+        normalized = raw.strip().upper()
+        try:
+            return EmailCategory(normalized)
+        except ValueError:
+            pass
+    return EmailCategory.OTHER
+
+
+def _coerce_confidence(raw: object) -> float:
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, min(1.0, value))
+
+
+def _coerce_received_at(raw: object) -> datetime:
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
 def email_doc_to_response(
     doc: dict[str, Any],
     *,
@@ -55,14 +91,14 @@ def email_doc_to_response(
 
     return EmailResponse(
         id=str(doc["_id"]),
-        account_id=doc["account_id"],
-        gmail_message_id=doc["gmail_message_id"],
+        account_id=str(doc.get("account_id") or ""),
+        gmail_message_id=str(doc.get("gmail_message_id") or doc["_id"]),
         sender=sender,
         subject=subject,
         body_preview=body_preview,
-        received_at=doc["received_at"],
-        category=EmailCategory(doc["category"]),
-        confidence=float(doc.get("confidence", 0.0)),
+        received_at=_coerce_received_at(doc.get("received_at")),
+        category=_coerce_category(doc.get("category")),
+        confidence=_coerce_confidence(doc.get("confidence", 0.0)),
         company_name=company_name,
         job_role=job_role,
         is_read=bool(doc.get("is_read", False)),

@@ -5,9 +5,6 @@ import re
 import time
 import uuid
 from urllib.parse import urlparse
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
 
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE), r"\1[REDACTED]"),
@@ -76,23 +73,52 @@ def configure_logging() -> None:
         jobmail_logger.addFilter(SensitiveDataFilter())
 
 
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Logs HTTP method, path, status code, request ID, and latency without headers or bodies."""
+class RequestLoggingMiddleware:
+    """Pure ASGI middleware logging HTTP method, path, status, request ID, and latency."""
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         logger = logging.getLogger("jobmail.http")
-        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
-        request.state.request_id = request_id
+        raw_headers = scope.get("headers", [])
+        request_id = ""
+        for k, v in raw_headers:
+            if k.lower() == b"x-request-id":
+                request_id = v.decode("latin-1").strip()[:64]
+                break
+        if not request_id:
+            request_id = uuid.uuid4().hex[:12]
+
+        state = scope.setdefault("state", {})
+        state["request_id"] = request_id
         start = time.perf_counter()
-        response = await call_next(request)
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        response.headers.setdefault("X-Request-ID", request_id)
-        logger.info(
-            "[%s] %s %s -> %d (%.1fms)",
-            request_id,
-            request.method,
-            request.url.path,
-            response.status_code,
-            elapsed_ms,
-        )
-        return response
+        status_code = 500
+        req_id_bytes = request_id.encode("latin-1")
+
+        async def send_with_request_id(message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message.get("status", 500))
+                headers = list(message.get("headers", []))
+                if not any(k.lower() == b"x-request-id" for k, _ in headers):
+                    headers.append((b"x-request-id", req_id_bytes))
+                message["headers"] = headers
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        finally:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            logger.info(
+                "[%s] %s %s -> %d (%.1fms)",
+                request_id,
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+                status_code,
+                elapsed_ms,
+            )

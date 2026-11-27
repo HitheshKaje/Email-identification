@@ -195,11 +195,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=openapi_url,
     )
 
-    # Register innermost middlewares first; CORSMiddleware is added LAST (outermost)
-    # so OPTIONS preflight requests and error responses (including 413/4xx/500) always
-    # carry the appropriate Access-Control-* headers.
+    # Register innermost middlewares first; UnhandledExceptionMiddleware sits just
+    # inside CORSMiddleware (which is added LAST / outermost) so OPTIONS preflight
+    # requests and all 4xx/5xx error responses (including inner middleware failures)
+    # always retain the appropriate Access-Control-* headers.
     register_exception_handlers(app)
-    app.add_middleware(UnhandledExceptionMiddleware)
 
     if resolved_settings.trusted_host_list:
         app.add_middleware(
@@ -212,15 +212,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         RequestSizeLimitMiddleware, max_bytes=resolved_settings.max_request_body_bytes
     )
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(UnhandledExceptionMiddleware)
 
     allow_origin_regex = (
         r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
         if not resolved_settings.is_production
         else None
     )
+    cors_origins = resolved_settings.cors_origin_list
+    logging.getLogger("jobmail.cors").info(
+        "Configured CORS origins=%s allow_credentials=True environment=%s",
+        cors_origins,
+        resolved_settings.environment,
+    )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=resolved_settings.cors_origin_list,
+        allow_origins=cors_origins,
         allow_origin_regex=allow_origin_regex,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -233,6 +240,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "X-Request-ID",
             "X-Requested-With",
         ],
+        expose_headers=["X-Request-ID", "Retry-After"],
     )
 
     @app.get("/health", response_model=HealthResponse, tags=["Health"])

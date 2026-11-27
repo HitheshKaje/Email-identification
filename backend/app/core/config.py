@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 from urllib.parse import urlparse
 from cryptography.fernet import Fernet
@@ -67,11 +68,11 @@ def _parse_origin_list(raw: str) -> list[str]:
             if isinstance(decoded, list):
                 candidates = [str(item) for item in decoded]
             else:
-                candidates = cleaned.split(",")
+                candidates = re.split(r"[\s,;]+", cleaned)
         except json.JSONDecodeError:
-            candidates = cleaned.strip("[]").split(",")
+            candidates = re.split(r"[\s,;]+", cleaned.strip("[]"))
     else:
-        candidates = cleaned.split(",")
+        candidates = re.split(r"[\s,;]+", cleaned)
 
     seen: set[str] = set()
     origins: list[str] = []
@@ -359,6 +360,17 @@ class Settings(BaseSettings):
                     and "GOOGLE_REDIRECT_URI" not in os.environ
                 ):
                     self.google_redirect_uri = f"{render_url}/auth/google/callback"
+                if (
+                    self.frontend_url == "http://localhost:8080"
+                    and "FRONTEND_URL" not in os.environ
+                ):
+                    self.frontend_url = PRODUCTION_FRONTEND_ORIGIN
+                if (
+                    self.cors_origins == "http://localhost:8080,http://127.0.0.1:8080"
+                    and "CORS_ORIGINS" not in os.environ
+                ):
+                    self.cors_origins = self.frontend_url.rstrip("/")
+            elif _is_render_runtime():
                 if (
                     self.frontend_url == "http://localhost:8080"
                     and "FRONTEND_URL" not in os.environ
