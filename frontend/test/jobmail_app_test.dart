@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jobmail/app.dart';
 import 'package:jobmail/models/auth_session.dart';
@@ -486,8 +487,17 @@ void main() {
     await tester.pump(const Duration(milliseconds: 80));
     await tester.pumpAndSettle();
 
-    // Open Email Details from Dashboard
-    await tester.tap(find.text('Shortlisted for Software Developer Interview'));
+    // Scroll Dashboard ListView to Recent Emails and open Email Details
+    final firstEmailFinder =
+        find.text('Shortlisted for Software Developer Interview');
+    await tester.scrollUntilVisible(
+      firstEmailFinder,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(firstEmailFinder);
+    await tester.pumpAndSettle();
+    await tester.tap(firstEmailFinder);
     await tester.pumpAndSettle();
 
     expect(find.text('Email Details'), findsOneWidget);
@@ -522,8 +532,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Account Security'), findsOneWidget);
     expect(find.text('Change Password'), findsOneWidget);
+
+    final settingsScrollable = find.byType(Scrollable).last;
+    await tester.scrollUntilVisible(
+      find.text('Active Sessions'),
+      150,
+      scrollable: settingsScrollable,
+    );
     expect(find.text('Active Sessions'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('Privacy'),
+      200,
+      scrollable: settingsScrollable,
+    );
     expect(find.text('Privacy'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('Dark'),
+      200,
+      scrollable: settingsScrollable,
+    );
+    await tester.ensureVisible(find.text('Dark'));
+    await tester.pumpAndSettle();
     expect(find.text('Theme Mode'), findsOneWidget);
     await tester.tap(find.text('Dark'));
     await tester.pumpAndSettle();
