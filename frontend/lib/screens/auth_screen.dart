@@ -473,14 +473,33 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ),
                   ),
-                  if (ApiConfig.canCustomizeApiUrl) ...<Widget>[
-                    const SizedBox(height: 14),
+                  const SizedBox(height: 14),
+                  if (ApiConfig.canCustomizeApiUrl)
                     TextButton.icon(
                       onPressed: () => _editServerUrl(settings),
                       icon: const Icon(Icons.dns_outlined, size: 16),
                       label: Text('Server: ${settings.apiBaseUrl}'),
+                    )
+                  else
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: <Widget>[
+                        Icon(
+                          Icons.dns_outlined,
+                          size: 16,
+                          color: Theme.of(context).textTheme.bodySmall?.color,
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            'Server: ${settings.apiBaseUrl}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
                 ],
               ),
             ),

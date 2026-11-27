@@ -643,20 +643,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ],
                     ),
                   ),
-                  if (ApiConfig.canCustomizeApiUrl) ...<Widget>[
-                    const Divider(),
-                    ListTile(
-                      leading: const Icon(Icons.dns_outlined),
-                      title: const Text('Backend API Endpoint (Dev)'),
-                      subtitle: Text(
-                        settings.apiBaseUrl,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing: const Icon(Icons.edit_outlined, size: 18),
-                      onTap: () => _editBackendUrl(settings),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.dns_outlined),
+                    title: Text(
+                      ApiConfig.canCustomizeApiUrl
+                          ? 'Backend API Endpoint (Dev)'
+                          : 'Backend API Endpoint',
                     ),
-                  ],
+                    subtitle: Text(
+                      settings.apiBaseUrl,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: ApiConfig.canCustomizeApiUrl
+                        ? const Icon(Icons.edit_outlined, size: 18)
+                        : null,
+                    onTap: ApiConfig.canCustomizeApiUrl
+                        ? () => _editBackendUrl(settings)
+                        : null,
+                  ),
                 ],
               ),
               const SizedBox(height: 24),

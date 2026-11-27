@@ -5,36 +5,67 @@ import 'package:flutter/foundation.dart';
 class ApiConfig {
   ApiConfig._();
 
+  static const String productionBaseUrl =
+      'https://jobmail-backend-tzwt.onrender.com';
+
   static const String _envBaseUrl = String.fromEnvironment('JOBMAIL_API_URL');
   static const bool allowLocalHttp =
       bool.fromEnvironment('JOBMAIL_ALLOW_LOCAL_HTTP', defaultValue: false);
 
+  static bool get hasEnvOverride => normalizeUrl(_envBaseUrl).isNotEmpty;
+
   static bool get allowLocalHttpInCurrentBuild =>
       !kReleaseMode || allowLocalHttp;
 
-  static bool get canCustomizeApiUrl =>
-      allowLocalHttpInCurrentBuild || _envBaseUrl.isEmpty;
+  static bool get canCustomizeApiUrl => allowLocalHttpInCurrentBuild;
 
   static String get endpointHint => allowLocalHttpInCurrentBuild
-      ? 'http://192.168.1.6:8000 or https://api.yourdomain.com'
-      : 'https://api.yourdomain.com';
+      ? 'http://localhost:8000 or $productionBaseUrl'
+      : productionBaseUrl;
 
-  /// Default base URL tailored per platform for local development,
-  /// overridable via `--dart-define=JOBMAIL_API_URL=https://api.example.com`.
-  static String get defaultBaseUrl {
-    if (_envBaseUrl.isNotEmpty) {
-      return _envBaseUrl;
+  /// Trims whitespace and trailing slashes so endpoint paths join cleanly.
+  static String normalizeUrl(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    return trimmed.endsWith('/')
+        ? trimmed.substring(0, trimmed.length - 1)
+        : trimmed;
+  }
+
+  /// Resolves the active default API URL for either deployed release builds
+  /// or local development targets.
+  @visibleForTesting
+  static String resolveDefaultBaseUrl({
+    required bool isReleaseMode,
+    required bool isWeb,
+    required TargetPlatform platform,
+    String envBaseUrl = '',
+  }) {
+    final normalizedEnv = normalizeUrl(envBaseUrl);
+    if (normalizedEnv.isNotEmpty) {
+      return normalizedEnv;
     }
-    if (kIsWeb) {
+    if (isReleaseMode) {
+      return productionBaseUrl;
+    }
+    if (isWeb) {
       return 'http://localhost:8000';
     }
-    switch (defaultTargetPlatform) {
+    switch (platform) {
       case TargetPlatform.android:
         return 'http://10.0.2.2:8000';
       default:
         return 'http://localhost:8000';
     }
   }
+
+  /// Default base URL resolved for the current build mode and platform,
+  /// overridable via `--dart-define=JOBMAIL_API_URL=https://api.example.com`.
+  static String get defaultBaseUrl => resolveDefaultBaseUrl(
+        isReleaseMode: kReleaseMode,
+        isWeb: kIsWeb,
+        platform: defaultTargetPlatform,
+        envBaseUrl: _envBaseUrl,
+      );
 
   /// Returns true when [host] is a loopback host, Android emulator host,
   /// `.local` mDNS host, or an RFC1918 private LAN IPv4 address.

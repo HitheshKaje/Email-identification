@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jobmail/app.dart';
 import 'package:jobmail/models/auth_session.dart';
@@ -539,5 +540,81 @@ void main() {
     expect(ApiConfig.isValidEndpointUrl('http://example.com:8000'), isFalse);
     expect(ApiConfig.isValidEndpointUrl('http://8.8.8.8:8000'), isFalse);
     expect(ApiConfig.isValidEndpointUrl('ftp://192.168.1.6:8000'), isFalse);
+  });
+
+  test(
+      'ApiConfig resolves Render production URL in release and localhost in dev',
+      () {
+    expect(
+      ApiConfig.resolveDefaultBaseUrl(
+        isReleaseMode: true,
+        isWeb: true,
+        platform: TargetPlatform.linux,
+      ),
+      'https://jobmail-backend-tzwt.onrender.com',
+    );
+    expect(
+      ApiConfig.resolveDefaultBaseUrl(
+        isReleaseMode: true,
+        isWeb: false,
+        platform: TargetPlatform.android,
+      ),
+      'https://jobmail-backend-tzwt.onrender.com',
+    );
+    expect(
+      ApiConfig.resolveDefaultBaseUrl(
+        isReleaseMode: false,
+        isWeb: true,
+        platform: TargetPlatform.windows,
+      ),
+      'http://localhost:8000',
+    );
+    expect(
+      ApiConfig.resolveDefaultBaseUrl(
+        isReleaseMode: false,
+        isWeb: false,
+        platform: TargetPlatform.android,
+      ),
+      'http://10.0.2.2:8000',
+    );
+    expect(
+      ApiConfig.resolveDefaultBaseUrl(
+        isReleaseMode: false,
+        isWeb: true,
+        platform: TargetPlatform.windows,
+        envBaseUrl: 'https://jobmail-backend-tzwt.onrender.com/',
+      ),
+      'https://jobmail-backend-tzwt.onrender.com',
+    );
+  });
+
+  testWidgets('AuthScreen displays actual configured production API Server URL',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'jobmail_onboarding_done': true,
+      'jobmail_api_url': 'https://jobmail-backend-tzwt.onrender.com',
+    });
+    final sp = await SharedPreferences.getInstance();
+    final prefs = PreferencesService(sp);
+    final repo = FakeJobMailRepository();
+
+    await tester.pumpWidget(
+      JobMailApp(
+        repository: repo,
+        preferencesService: prefs,
+        homeOverride: const SplashScreen(
+          splashDuration: Duration(milliseconds: 50),
+        ),
+      ),
+    );
+
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welcome to JobMail'), findsOneWidget);
+    expect(
+      find.text('Server: https://jobmail-backend-tzwt.onrender.com'),
+      findsOneWidget,
+    );
   });
 }

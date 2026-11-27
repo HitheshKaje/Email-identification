@@ -103,15 +103,18 @@ class PreferencesService {
       _prefs.setString(_keyProfileEmail, email.trim());
 
   String get apiBaseUrl {
+    if (ApiConfig.hasEnvOverride) {
+      return ApiConfig.defaultBaseUrl;
+    }
     final saved = _prefs.getString(_keyApiUrl);
     if (saved != null && ApiConfig.isValidEndpointUrl(saved)) {
-      return saved;
+      return ApiConfig.normalizeUrl(saved);
     }
     return ApiConfig.defaultBaseUrl;
   }
 
   Future<void> setApiBaseUrl(String url) {
-    final cleaned = url.trim();
+    final cleaned = ApiConfig.normalizeUrl(url);
     if (!ApiConfig.isValidEndpointUrl(cleaned)) {
       return Future<void>.value();
     }

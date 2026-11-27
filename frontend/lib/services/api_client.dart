@@ -9,7 +9,7 @@ class ApiClient {
   ApiClient({String? baseUrl})
       : _dio = Dio(
           BaseOptions(
-            baseUrl: baseUrl ?? ApiConfig.defaultBaseUrl,
+            baseUrl: ApiConfig.normalizeUrl(baseUrl ?? ApiConfig.defaultBaseUrl),
             connectTimeout: ApiConfig.connectTimeout,
             receiveTimeout: ApiConfig.receiveTimeout,
             headers: const <String, dynamic>{
