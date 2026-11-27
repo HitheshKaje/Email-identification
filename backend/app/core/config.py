@@ -226,6 +226,17 @@ class Settings(BaseSettings):
                 "MONGODB_URI must start with 'mongodb://' or 'mongodb+srv://'."
             )
 
+        is_render = (
+            os.environ.get("RENDER", "").strip().lower() == "true"
+            or bool(os.environ.get("RENDER_EXTERNAL_URL", "").strip())
+        )
+        if is_render and self.mongodb_uri and _has_localhost_mongodb(self.mongodb_uri):
+            raise ValueError(
+                "Render environment variable MONGODB_URI is pointing to localhost "
+                "(e.g. mongodb://localhost:27017). Update MONGODB_URI in Render Dashboard -> "
+                "Environment to your MongoDB Atlas mongodb+srv:// URI and set ENVIRONMENT=production."
+            )
+
         if self.jwt_secret_key.strip() in _PLACEHOLDER_SECRETS or (
             is_prod and len(self.jwt_secret_key.strip()) < 32
         ):

@@ -771,3 +771,12 @@ def test_render_external_url_derives_safe_https_defaults_and_aggregates_errors(m
     )
     assert render_cfg.frontend_url == "https://jobmail-backend-tzwt.onrender.com"
     assert render_cfg.cors_origin_list == ["https://jobmail-backend-tzwt.onrender.com"]
+
+    # Even if ENVIRONMENT=development on Render, localhost MONGODB_URI is rejected clearly
+    monkeypatch.setenv("RENDER", "true")
+    with pytest.raises(ValueError, match="Render environment variable MONGODB_URI"):
+        Settings(
+            _env_file=None,
+            environment="development",
+            mongodb_uri="mongodb://localhost:27017",
+        )
