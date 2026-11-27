@@ -34,6 +34,7 @@ class JobMailApp extends StatelessWidget {
         ChangeNotifierProvider<AppSettingsProvider>(
           create: (_) => AppSettingsProvider(
             preferencesService: preferencesService,
+            repository: repository,
             apiClient: apiClient,
           ),
         ),

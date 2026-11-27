@@ -9,6 +9,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final sharedPreferences = await SharedPreferences.getInstance();
   final preferencesService = PreferencesService(sharedPreferences);
+  await preferencesService.initSecureSession();
   final apiClient = ApiClient(baseUrl: preferencesService.apiBaseUrl);
   final repository = ApiJobMailRepository(apiClient);
 

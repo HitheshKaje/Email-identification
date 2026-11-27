@@ -5,6 +5,7 @@ import '../models/email_item.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/app_settings_provider.dart';
 import '../providers/dashboard_provider.dart';
+import '../providers/emails_provider.dart';
 import '../providers/notifications_provider.dart';
 import '../theme/app_colors.dart';
 import '../utils/responsive.dart';
@@ -111,11 +112,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             : () async {
                                 final ok = await dashboard.syncNow();
                                 if (!context.mounted) return;
+                                if (ok) {
+                                  accounts.loadAccounts();
+                                  context.read<EmailsProvider>().loadEmails();
+                                  notifications.loadNotifications();
+                                }
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
                                     content: Text(
                                       ok
-                                          ? 'Gmail sync complete.'
+                                          ? (dashboard.lastSyncMessage ??
+                                              'Gmail sync complete.')
                                           : (dashboard.errorMessage ??
                                               'Sync failed.'),
                                     ),
@@ -175,7 +182,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: <Widget>[
+                      _SummaryPill(
+                        icon: Icons.mark_email_read_outlined,
+                        label: 'Processed: ${stats.totalProcessedEmails}',
+                      ),
+                      _SummaryPill(
+                        icon: Icons.notifications_active_outlined,
+                        label: 'Unread Alerts: $unreadNotifications',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: <Widget>[
@@ -363,6 +385,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           )
           .toList(),
+    );
+  }
+}
+
+class _SummaryPill extends StatelessWidget {
+  const _SummaryPill({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.darkSurface : AppColors.lightSurface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            icon,
+            size: 15,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+        ],
+      ),
     );
   }
 }

@@ -15,12 +15,14 @@ class DashboardProvider extends ChangeNotifier {
   bool _isLoading = false;
   bool _isSyncing = false;
   String? _errorMessage;
+  String? _lastSyncMessage;
 
   DashboardStats get stats => _stats;
   List<EmailItem> get recentEmails => _recentEmails;
   bool get isLoading => _isLoading;
   bool get isSyncing => _isSyncing;
   String? get errorMessage => _errorMessage;
+  String? get lastSyncMessage => _lastSyncMessage;
 
   Future<void> loadDashboard() async {
     _isLoading = true;
@@ -47,10 +49,11 @@ class DashboardProvider extends ChangeNotifier {
   Future<bool> syncNow() async {
     _isSyncing = true;
     _errorMessage = null;
+    _lastSyncMessage = null;
     notifyListeners();
 
     try {
-      await _repository.triggerSync();
+      _lastSyncMessage = await _repository.triggerSync();
       await loadDashboard();
       return true;
     } on ApiException catch (e) {

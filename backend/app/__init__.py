@@ -1,0 +1,1 @@
+"""JobMail FastAPI backend package."""

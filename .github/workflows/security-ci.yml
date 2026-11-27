@@ -1,0 +1,56 @@
+name: JobMail Security & Verification CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-security:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:8
+        ports:
+          - 27017:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Audit Python dependencies for known CVEs
+        run: pip-audit -r backend/requirements.txt
+      - name: Verify no committed secrets in repo
+        run: |
+          test ! -f backend/.env
+          ! grep -rnE "GOCSPX-|AIza[0-9A-Za-z_-]{30,}|BEGIN [A-Z ]*PRIVATE KEY" backend/app frontend/lib
+      - name: Run backend security and API tests
+        working-directory: backend
+        env:
+          ENVIRONMENT: test
+          MONGODB_URI: mongodb://localhost:27017
+          MONGODB_DB_NAME: jobmail_ci
+        run: pytest -v
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install Flutter packages
+        working-directory: frontend
+        run: flutter pub get
+      - name: Run Flutter analyzer
+        working-directory: frontend
+        run: flutter analyze --no-fatal-infos
+      - name: Run Flutter tests
+        working-directory: frontend
+        run: flutter test

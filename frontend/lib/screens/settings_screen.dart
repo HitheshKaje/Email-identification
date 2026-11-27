@@ -1,25 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/connected_account.dart';
+import '../models/security_models.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/app_settings_provider.dart';
+import '../providers/dashboard_provider.dart';
+import '../providers/emails_provider.dart';
+import '../providers/notifications_provider.dart';
 import '../theme/app_colors.dart';
+import '../utils/api_config.dart';
+import '../utils/date_formatter.dart';
 import '../utils/responsive.dart';
+import '../widgets/security_dialogs.dart';
+import 'auth_screen.dart';
 import 'notifications_screen.dart';
-import 'onboarding_screen.dart';
 
-/// Screen 9: Application settings, theme, sync, privacy, profile, and logout.
-class SettingsScreen extends StatelessWidget {
+/// Screen 9: Application settings, Account Security, Active Sessions, Connected Accounts, Privacy & Logout.
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.onOpenAccounts});
 
   final VoidCallback onOpenAccounts;
 
-  Future<void> _editProfile(
-    BuildContext context,
-    AppSettingsProvider settings,
-  ) async {
-    final nameCtrl = TextEditingController(text: settings.profileName);
-    final emailCtrl = TextEditingController(text: settings.profileEmail);
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
 
+class _SettingsScreenState extends State<SettingsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<AppSettingsProvider>().refreshProfile();
+      final accounts = context.read<AccountsProvider>();
+      if (accounts.accounts.isEmpty) {
+        accounts.loadAccounts();
+      }
+    });
+  }
+
+  Future<void> _editProfile(AppSettingsProvider settings) async {
+    final nameCtrl = TextEditingController(text: settings.profileName);
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -27,6 +48,7 @@ class SettingsScreen extends StatelessWidget {
           title: const Text('Edit Profile'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               TextField(
                 controller: nameCtrl,
@@ -36,13 +58,9 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: emailCtrl,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  labelText: 'Primary Email',
-                  prefixIcon: Icon(Icons.email_outlined),
-                ),
+              Text(
+                'Primary Email: ${settings.profileEmail.isNotEmpty ? settings.profileEmail : 'Not set'}',
+                style: Theme.of(dialogContext).textTheme.bodySmall,
               ),
             ],
           ),
@@ -60,22 +78,14 @@ class SettingsScreen extends StatelessWidget {
       },
     );
 
-    if (saved == true && context.mounted) {
-      await settings.updateProfile(
-        name: nameCtrl.text,
-        email: emailCtrl.text,
-      );
+    if (saved == true && mounted) {
+      await settings.updateProfile(name: nameCtrl.text);
     }
     nameCtrl.dispose();
-    emailCtrl.dispose();
   }
 
-  Future<void> _editBackendUrl(
-    BuildContext context,
-    AppSettingsProvider settings,
-  ) async {
+  Future<void> _editBackendUrl(AppSettingsProvider settings) async {
     final urlCtrl = TextEditingController(text: settings.apiBaseUrl);
-
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -86,7 +96,7 @@ class SettingsScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                'Point JobMail to your FastAPI backend URL.',
+                'Point JobMail to your FastAPI backend URL (HTTPS required in release builds).',
                 style: Theme.of(dialogContext).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
@@ -95,7 +105,7 @@ class SettingsScreen extends StatelessWidget {
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
                   labelText: 'API Base URL',
-                  hintText: 'http://10.0.2.2:8000',
+                  hintText: 'http://localhost:8000',
                 ),
               ),
             ],
@@ -114,38 +124,55 @@ class SettingsScreen extends StatelessWidget {
       },
     );
 
-    if (saved == true && context.mounted) {
-      await settings.updateApiBaseUrl(urlCtrl.text);
-      if (context.mounted) {
+    if (saved == true && mounted) {
+      final ok = await settings.updateApiBaseUrl(urlCtrl.text);
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Backend API URL updated.')),
+          SnackBar(
+            content: Text(
+              ok
+                  ? 'Backend API URL updated.'
+                  : 'Invalid URL. Only HTTPS or local development hosts are allowed.',
+            ),
+          ),
         );
       }
     }
     urlCtrl.dispose();
   }
 
-  Future<void> _showPrivacyDialog(BuildContext context) async {
+  Future<void> _showPrivacyDialog(AppSettingsProvider settings) async {
+    PrivacyOverview? overview;
+    try {
+      overview = await settings.getPrivacyOverview();
+    } catch (_) {}
+    if (!mounted) return;
+
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('Privacy & Security'),
-          content: const Column(
+          title: const Text('Privacy Policy & Data Protection'),
+          content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Text('• Read-only Gmail scope via Google OAuth 2.0.'),
-              SizedBox(height: 8),
-              Text('• Gmail passwords are never requested or stored.'),
-              SizedBox(height: 8),
-              Text(
-                '• OAuth refresh tokens are encrypted at rest on the backend.',
-              ),
-              SizedBox(height: 8),
-              Text(
-                '• Minimal email metadata retention; disconnect any account anytime to permanently delete its credentials.',
-              ),
+              const Text('• Read-only Gmail scope (gmail.readonly) via OAuth 2.0 PKCE.'),
+              const SizedBox(height: 8),
+              const Text('• Gmail passwords are never requested or stored.'),
+              const SizedBox(height: 8),
+              const Text('• OAuth refresh tokens & sensitive email fields encrypted at rest via MultiFernet.'),
+              const SizedBox(height: 8),
+              const Text('• Strict user isolation & Google Limited Use compliance (no cross-user model training).'),
+              if (overview != null) ...<Widget>[
+                const Divider(height: 20),
+                Text(
+                  'Stored records: ${overview.emailsStored} email(s), '
+                  '${overview.connectedAccounts} account(s), '
+                  '${overview.notificationsStored} alert(s) • Retention: ${overview.dataRetentionDays} days',
+                  style: Theme.of(dialogContext).textTheme.bodySmall,
+                ),
+              ],
             ],
           ),
           actions: <Widget>[
@@ -159,17 +186,59 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _confirmLogout(
-    BuildContext context,
-    AppSettingsProvider settings,
+  Future<void> _disconnectAccountQuick(
+    ConnectedAccount account,
+    AccountsProvider accounts,
   ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Revoke & Disconnect Gmail?'),
+          content: Text(
+            'This revokes Google OAuth tokens for ${account.emailAddress} and permanently deletes its synced emails from JobMail.',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Revoke & Disconnect'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+    final ok = await accounts.disconnectAccount(account.id);
+    if (!mounted) return;
+    if (ok) {
+      context.read<DashboardProvider>().loadDashboard();
+      context.read<EmailsProvider>().loadEmails();
+      context.read<NotificationsProvider>().loadNotifications();
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Revoked & disconnected ${account.emailAddress}.'
+              : (accounts.actionError ?? 'Disconnect failed.'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmLogout(AppSettingsProvider settings) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('Log Out of JobMail?'),
           content: const Text(
-            'This clears your current app session on this device.',
+            'This signs out and revokes your current session on this device.',
           ),
           actions: <Widget>[
             TextButton(
@@ -186,11 +255,11 @@ class SettingsScreen extends StatelessWidget {
       },
     );
 
-    if (confirmed != true || !context.mounted) return;
+    if (confirmed != true || !mounted) return;
     await settings.logout();
-    if (!context.mounted) return;
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute<void>(builder: (_) => const OnboardingScreen()),
+      MaterialPageRoute<void>(builder: (_) => const AuthScreen()),
       (_) => false,
     );
   }
@@ -199,10 +268,15 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettingsProvider>();
     final accounts = context.watch<AccountsProvider>();
+    final user = settings.currentUser;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final surface = isDark ? AppColors.darkSurface : AppColors.lightSurface;
     final border = isDark ? AppColors.darkBorder : AppColors.lightBorder;
     final maxWidth = Responsive.contentMaxWidth(context);
+    final retentionDays = user?.dataRetentionDays ?? 180;
+    const allowedRetentions = <int>[30, 90, 180, 365];
+    final selectedRetention =
+        allowedRetentions.contains(retentionDays) ? retentionDays : 180;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -249,7 +323,7 @@ class SettingsScreen extends StatelessWidget {
                           Text(
                             settings.profileEmail.isNotEmpty
                                 ? settings.profileEmail
-                                : 'Tap edit to add your primary email',
+                                : 'Signed in user',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ],
@@ -257,7 +331,7 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     IconButton(
                       tooltip: 'Edit profile',
-                      onPressed: () => _editProfile(context, settings),
+                      onPressed: () => _editProfile(settings),
                       icon: const Icon(Icons.edit_outlined),
                     ),
                   ],
@@ -265,7 +339,107 @@ class SettingsScreen extends StatelessWidget {
               ),
               const SizedBox(height: 20),
               Text(
-                'Accounts & Sync',
+                'Account Security',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 8),
+              _SettingsSectionCard(
+                children: <Widget>[
+                  ListTile(
+                    leading: const Icon(Icons.password_rounded),
+                    title: const Text('Change Password'),
+                    subtitle: const Text('Argon2id protected • revokes other sessions'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => showChangePasswordDialog(context, settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.phonelink_lock_rounded),
+                    title: const Text('Multi-Factor Authentication (MFA)'),
+                    subtitle: Text(
+                      user?.mfaEnabled == true
+                          ? 'Enabled via authenticator app'
+                          : 'Off — add TOTP 2FA protection',
+                    ),
+                    trailing: Chip(
+                      label: Text(user?.mfaEnabled == true ? 'Enabled' : 'Enable'),
+                    ),
+                    onTap: () => showMfaManagementDialog(context, settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.mark_email_read_outlined),
+                    title: const Text('Email Verification Status'),
+                    subtitle: Text(
+                      user?.emailVerified == true
+                          ? 'Email address verified'
+                          : 'Unverified — tap to verify ownership',
+                    ),
+                    trailing: Icon(
+                      user?.emailVerified == true
+                          ? Icons.verified_rounded
+                          : Icons.chevron_right_rounded,
+                      color: user?.emailVerified == true ? AppColors.success : null,
+                    ),
+                    onTap: user?.emailVerified == true
+                        ? null
+                        : () => showEmailVerificationDialog(context, settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.schedule_outlined),
+                    title: const Text('Last Login Information'),
+                    subtitle: Text(
+                      user?.lastLoginAt != null
+                          ? '${DateFormatter.formatShortDateTime(user!.lastLoginAt!)}'
+                              '${user.lastLoginIp != null ? ' • IP ${user.lastLoginIp}' : ''}'
+                          : 'Current session active',
+                    ),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.shield_outlined),
+                    title: const Text('Security Activity Log'),
+                    subtitle: const Text('Inspect sign-ins, MFA, and OAuth events'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => showSecurityActivitySheet(context, settings),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Active Sessions',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 8),
+              _SettingsSectionCard(
+                children: <Widget>[
+                  ListTile(
+                    leading: const Icon(Icons.devices_rounded),
+                    title: const Text('Manage Active Sessions'),
+                    subtitle: const Text('Inspect devices, last active time, or revoke access'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => showActiveSessionsSheet(context, settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.logout_rounded, color: AppColors.error),
+                    title: const Text('Logout from All Devices'),
+                    subtitle: const Text('Immediately invalidate every active session'),
+                    onTap: () async {
+                      await settings.logoutAllDevices();
+                      if (!context.mounted) return;
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute<void>(builder: (_) => const AuthScreen()),
+                        (_) => false,
+                      );
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Connected Accounts',
                 style: Theme.of(context).textTheme.labelLarge,
               ),
               const SizedBox(height: 8),
@@ -273,13 +447,31 @@ class SettingsScreen extends StatelessWidget {
                 children: <Widget>[
                   ListTile(
                     leading: const Icon(Icons.alternate_email_rounded),
-                    title: const Text('Connected Accounts'),
+                    title: const Text('Manage Gmail Accounts'),
                     subtitle: Text(
-                      '${accounts.accounts.length} Gmail account${accounts.accounts.length == 1 ? '' : 's'} linked',
+                      '${accounts.accounts.length} Gmail account${accounts.accounts.length == 1 ? '' : 's'} linked (read-only OAuth)',
                     ),
                     trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: onOpenAccounts,
+                    onTap: widget.onOpenAccounts,
                   ),
+                  for (final account in accounts.accounts) ...<Widget>[
+                    const Divider(),
+                    ListTile(
+                      leading: Icon(
+                        Icons.mail_outline_rounded,
+                        color: account.syncStatus.color,
+                      ),
+                      title: Text(account.emailAddress),
+                      subtitle: Text(
+                        '${account.syncStatus.label} • '
+                        '${account.lastSyncedAt != null ? 'Synced ${DateFormatter.formatRelative(account.lastSyncedAt!)}' : 'Not synced yet'}',
+                      ),
+                      trailing: TextButton(
+                        onPressed: () => _disconnectAccountQuick(account, accounts),
+                        child: const Text('Revoke'),
+                      ),
+                    ),
+                  ],
                   const Divider(),
                   SwitchListTile(
                     secondary: const Icon(Icons.sync_rounded),
@@ -320,6 +512,66 @@ class SettingsScreen extends StatelessWidget {
                       ),
                     ),
                   ],
+                ],
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Privacy',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 8),
+              _SettingsSectionCard(
+                children: <Widget>[
+                  ListTile(
+                    leading: const Icon(Icons.auto_delete_outlined),
+                    title: const Text('Data Retention Policy'),
+                    subtitle: const Text('Auto-purge emails older than selected window'),
+                    trailing: DropdownButton<int>(
+                      value: selectedRetention,
+                      underline: const SizedBox.shrink(),
+                      items: const <DropdownMenuItem<int>>[
+                        DropdownMenuItem<int>(value: 30, child: Text('30 days')),
+                        DropdownMenuItem<int>(value: 90, child: Text('90 days')),
+                        DropdownMenuItem<int>(value: 180, child: Text('180 days')),
+                        DropdownMenuItem<int>(value: 365, child: Text('365 days')),
+                      ],
+                      onChanged: (val) async {
+                        if (val != null) {
+                          await settings.updateDataRetention(val);
+                        }
+                      },
+                    ),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.download_outlined),
+                    title: const Text('Download My Data'),
+                    subtitle: const Text('Export profile, accounts, and emails as JSON'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => showExportDataDialog(context, settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.privacy_tip_outlined),
+                    title: const Text('Privacy Policy & Encryption'),
+                    subtitle: const Text('Read-only OAuth scope, MultiFernet, Limited Use'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => _showPrivacyDialog(settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.delete_sweep_outlined, color: AppColors.error),
+                    title: const Text('Delete Associated Gmail Data'),
+                    subtitle: const Text('Erase synced emails and alerts from JobMail'),
+                    onTap: () => showDeleteGmailDataDialog(context, settings),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.person_remove_outlined, color: AppColors.error),
+                    title: const Text('Delete My Account'),
+                    subtitle: const Text('Permanently delete account and revoke OAuth'),
+                    onTap: () => showDeleteAccountDialog(context, settings),
+                  ),
                 ],
               ),
               const SizedBox(height: 20),
@@ -387,37 +639,20 @@ class SettingsScreen extends StatelessWidget {
                       ],
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'Privacy & Connection',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-              const SizedBox(height: 8),
-              _SettingsSectionCard(
-                children: <Widget>[
-                  ListTile(
-                    leading: const Icon(Icons.privacy_tip_outlined),
-                    title: const Text('Privacy Settings'),
-                    subtitle: const Text(
-                      'OAuth scope, token encryption, and retention policy',
+                  if (ApiConfig.canCustomizeApiUrl) ...<Widget>[
+                    const Divider(),
+                    ListTile(
+                      leading: const Icon(Icons.dns_outlined),
+                      title: const Text('Backend API Endpoint (Dev)'),
+                      subtitle: Text(
+                        settings.apiBaseUrl,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(Icons.edit_outlined, size: 18),
+                      onTap: () => _editBackendUrl(settings),
                     ),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: () => _showPrivacyDialog(context),
-                  ),
-                  const Divider(),
-                  ListTile(
-                    leading: const Icon(Icons.dns_outlined),
-                    title: const Text('Backend API Endpoint'),
-                    subtitle: Text(
-                      settings.apiBaseUrl,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    trailing: const Icon(Icons.edit_outlined, size: 18),
-                    onTap: () => _editBackendUrl(context, settings),
-                  ),
+                  ],
                 ],
               ),
               const SizedBox(height: 24),
@@ -426,7 +661,7 @@ class SettingsScreen extends StatelessWidget {
                   foregroundColor: AppColors.error,
                   side: BorderSide(color: AppColors.error.withAlpha(110)),
                 ),
-                onPressed: () => _confirmLogout(context, settings),
+                onPressed: () => _confirmLogout(settings),
                 icon: const Icon(Icons.logout_rounded),
                 label: const Text('Logout'),
               ),

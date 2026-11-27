@@ -5,6 +5,7 @@ import '../providers/app_settings_provider.dart';
 import '../theme/app_colors.dart';
 import '../widgets/jobmail_logo.dart';
 import '../widgets/main_navigation_shell.dart';
+import 'auth_screen.dart';
 import 'onboarding_screen.dart';
 
 /// Screen 1: Branded Splash Screen with loading animation and session routing.
@@ -48,13 +49,19 @@ class _SplashScreenState extends State<SplashScreen>
 
   void _navigateNext() {
     if (!mounted) return;
-    final onboardingDone =
-        context.read<AppSettingsProvider>().isOnboardingCompleted;
+    final settings = context.read<AppSettingsProvider>();
+    final Widget destination;
+    if (!settings.isOnboardingCompleted) {
+      destination = const OnboardingScreen();
+    } else if (!settings.isAuthenticated) {
+      destination = const AuthScreen();
+    } else {
+      destination = const MainNavigationShell();
+    }
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder<void>(
-        pageBuilder: (_, __, ___) => onboardingDone
-            ? const MainNavigationShell()
-            : const OnboardingScreen(),
+        pageBuilder: (_, __, ___) => destination,
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
         },

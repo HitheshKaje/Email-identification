@@ -11,12 +11,18 @@ class AccountCard extends StatelessWidget {
     required this.isSyncing,
     required this.onSync,
     required this.onDisconnect,
+    this.isVerifying = false,
+    this.onVerify,
+    this.onReconnect,
   });
 
   final ConnectedAccount account;
   final bool isSyncing;
+  final bool isVerifying;
   final VoidCallback onSync;
   final VoidCallback onDisconnect;
+  final VoidCallback? onVerify;
+  final VoidCallback? onReconnect;
 
   @override
   Widget build(BuildContext context) {
@@ -141,20 +147,45 @@ class AccountCard extends StatelessWidget {
           const SizedBox(height: 14),
           Row(
             children: <Widget>[
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: isSyncing ? null : onSync,
-                  icon: isSyncing
+              if (account.syncStatus == AccountSyncStatus.revoked &&
+                  onReconnect != null)
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: isSyncing ? null : onReconnect,
+                    icon: const Icon(Icons.link_rounded, size: 18),
+                    label: const Text('Reconnect'),
+                  ),
+                )
+              else
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: (isSyncing || isVerifying) ? null : onSync,
+                    icon: isSyncing
+                        ? const SizedBox(
+                            width: 15,
+                            height: 15,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded, size: 18),
+                    label: Text(isSyncing ? 'Syncing...' : 'Sync Now'),
+                  ),
+                ),
+              if (onVerify != null &&
+                  account.syncStatus != AccountSyncStatus.revoked) ...<Widget>[
+                const SizedBox(width: 8),
+                IconButton.outlined(
+                  tooltip: 'Refresh connection status',
+                  onPressed: (isSyncing || isVerifying) ? null : onVerify,
+                  icon: isVerifying
                       ? const SizedBox(
                           width: 15,
                           height: 15,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.refresh_rounded, size: 18),
-                  label: Text(isSyncing ? 'Syncing...' : 'Sync Now'),
+                      : const Icon(Icons.verified_user_outlined, size: 18),
                 ),
-              ),
-              const SizedBox(width: 10),
+              ],
+              const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: isSyncing ? null : onDisconnect,
                 style: OutlinedButton.styleFrom(

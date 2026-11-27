@@ -3,6 +3,7 @@ import 'email_category.dart';
 /// Aggregated recruitment email counts displayed on Dashboard and Categories screens.
 class DashboardStats {
   const DashboardStats({
+    this.totalProcessedEmails = 0,
     this.totalJobEmails = 0,
     this.newOpportunities = 0,
     this.interviewInvitations = 0,
@@ -11,6 +12,7 @@ class DashboardStats {
     this.categoryCounts = const <EmailCategory, int>{},
   });
 
+  final int totalProcessedEmails;
   final int totalJobEmails;
   final int newOpportunities;
   final int interviewInvitations;
@@ -33,6 +35,7 @@ class DashboardStats {
     }
 
     return DashboardStats(
+      totalProcessedEmails: _readInt(json['total_processed_emails']),
       totalJobEmails: _readInt(json['total_job_emails']),
       newOpportunities: _readInt(json['new_opportunities']),
       interviewInvitations: _readInt(json['interview_invitations']),

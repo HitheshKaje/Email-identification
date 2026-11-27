@@ -17,7 +17,11 @@ class EmailItem {
     this.companyName,
     this.jobRole,
     this.isRead = false,
+    this.hasAttachments = false,
+    this.attachmentNames = const <String>[],
   });
+
+  static final RegExp _safeGmailIdPattern = RegExp(r'^[A-Za-z0-9_\-]+$');
 
   final String id;
   final String accountId;
@@ -33,6 +37,8 @@ class EmailItem {
   final String? companyName;
   final String? jobRole;
   final bool isRead;
+  final bool hasAttachments;
+  final List<String> attachmentNames;
 
   String get displayContent {
     final content = fullContent?.trim();
@@ -42,8 +48,16 @@ class EmailItem {
     return bodyPreview;
   }
 
-  Uri get gmailUri =>
-      Uri.parse('https://mail.google.com/mail/u/0/#all/$gmailMessageId');
+  Uri get gmailUri {
+    if (_safeGmailIdPattern.hasMatch(gmailMessageId.trim())) {
+      return Uri.https(
+        'mail.google.com',
+        '/mail/u/0/',
+        null,
+      ).replace(fragment: 'all/${gmailMessageId.trim()}');
+    }
+    return Uri.https('mail.google.com', '/mail/u/0/');
+  }
 
   EmailItem copyWith({
     String? id,
@@ -60,6 +74,8 @@ class EmailItem {
     String? companyName,
     String? jobRole,
     bool? isRead,
+    bool? hasAttachments,
+    List<String>? attachmentNames,
   }) {
     return EmailItem(
       id: id ?? this.id,
@@ -76,6 +92,8 @@ class EmailItem {
       companyName: companyName ?? this.companyName,
       jobRole: jobRole ?? this.jobRole,
       isRead: isRead ?? this.isRead,
+      hasAttachments: hasAttachments ?? this.hasAttachments,
+      attachmentNames: attachmentNames ?? this.attachmentNames,
     );
   }
 
@@ -86,6 +104,10 @@ class EmailItem {
       explicitName: json['sender_name']?.toString(),
       explicitEmail: json['sender_email']?.toString(),
     );
+    final rawAttachments = json['attachment_names'];
+    final attachments = rawAttachments is List
+        ? rawAttachments.map((e) => e.toString()).toList()
+        : const <String>[];
 
     return EmailItem(
       id: (json['id'] ?? json['_id'] ?? '').toString(),
@@ -105,6 +127,8 @@ class EmailItem {
       companyName: _cleanOptional(json['company_name']),
       jobRole: _cleanOptional(json['job_role']),
       isRead: json['is_read'] == true,
+      hasAttachments: json['has_attachments'] == true || attachments.isNotEmpty,
+      attachmentNames: attachments,
     );
   }
 
@@ -132,7 +156,11 @@ class EmailItem {
       return (name.isEmpty ? email : name, email);
     }
     final fallback = raw.trim().isEmpty ? 'Unknown Sender' : raw.trim();
-    return (explicitName?.trim().isNotEmpty == true ? explicitName!.trim() : fallback,
-        explicitEmail?.trim().isNotEmpty == true ? explicitEmail!.trim() : fallback);
+    return (
+      explicitName?.trim().isNotEmpty == true ? explicitName!.trim() : fallback,
+      explicitEmail?.trim().isNotEmpty == true
+          ? explicitEmail!.trim()
+          : fallback,
+    );
   }
 }

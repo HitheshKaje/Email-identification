@@ -423,10 +423,56 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Text(
-                'Email Content',
-                style: Theme.of(context).textTheme.titleMedium,
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      'Email Content',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  const Tooltip(
+                    message:
+                        'Active HTML, scripts, and remote images are stripped safely.',
+                    child: Chip(
+                      visualDensity: VisualDensity.compact,
+                      avatar: Icon(Icons.security_rounded, size: 14),
+                      label: Text(
+                        'Sanitized Text',
+                        style: TextStyle(fontSize: 11),
+                      ),
+                    ),
+                  ),
+                ],
               ),
+              if (email.hasAttachments) ...<Widget>[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.accentAmber.withAlpha(24),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      const Icon(
+                        Icons.attachment_rounded,
+                        size: 16,
+                        color: AppColors.accentAmber,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          email.attachmentNames.isNotEmpty
+                              ? 'Attachments not downloaded for security: ${email.attachmentNames.join(', ')}'
+                              : 'Email includes attachments (never downloaded or executed by JobMail).',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
               SelectableText(
                 email.displayContent,

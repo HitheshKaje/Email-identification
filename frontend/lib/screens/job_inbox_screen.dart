@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/email_category.dart';
 import '../models/email_item.dart';
+import '../providers/accounts_provider.dart';
 import '../providers/emails_provider.dart';
 import '../utils/date_formatter.dart';
 import '../utils/responsive.dart';
@@ -28,6 +29,10 @@ class _JobInboxScreenState extends State<JobInboxScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       context.read<EmailsProvider>().loadEmails();
+      final accounts = context.read<AccountsProvider>();
+      if (accounts.accounts.isEmpty) {
+        accounts.loadAccounts();
+      }
     });
   }
 
@@ -141,6 +146,54 @@ class _JobInboxScreenState extends State<JobInboxScreen> {
     }
   }
 
+  Future<void> _pickAccountFilter(
+    EmailsProvider provider,
+    AccountsProvider accountsProvider,
+  ) async {
+    final accounts = accountsProvider.accounts;
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+            children: <Widget>[
+              Text(
+                'Filter by Gmail Account',
+                style: Theme.of(sheetContext).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: const Icon(Icons.all_inbox_rounded),
+                title: const Text('All Connected Accounts'),
+                trailing: provider.filter.accountId == null
+                    ? const Icon(Icons.check_rounded)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, ''),
+              ),
+              ...accounts.map((acc) {
+                final isSelected = provider.filter.accountId == acc.id;
+                return ListTile(
+                  leading: const Icon(Icons.alternate_email_rounded),
+                  title: Text(acc.emailAddress),
+                  subtitle: Text(acc.syncStatus.label),
+                  trailing: isSelected ? const Icon(Icons.check_rounded) : null,
+                  onTap: () => Navigator.pop(sheetContext, acc.id),
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selected != null && mounted) {
+      await provider.setAccountFilter(selected);
+    }
+  }
+
   Future<void> _pickDateFilter(EmailsProvider provider) async {
     final choice = await showModalBottomSheet<String>(
       context: context,
@@ -217,8 +270,18 @@ class _JobInboxScreenState extends State<JobInboxScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<EmailsProvider>();
+    final accountsProvider = context.watch<AccountsProvider>();
     final filter = provider.filter;
     final maxWidth = Responsive.contentMaxWidth(context);
+    String accountChipLabel = 'Account';
+    if (filter.accountId != null) {
+      final matched = accountsProvider.accounts
+          .where((a) => a.id == filter.accountId)
+          .toList();
+      if (matched.isNotEmpty) {
+        accountChipLabel = matched.first.emailAddress;
+      }
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -282,6 +345,16 @@ class _JobInboxScreenState extends State<JobInboxScreen> {
                               : (filter.isRead == false ? true : null);
                           provider.setReadFilter(next);
                         },
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilterChip(
+                        avatar: const Icon(Icons.alternate_email_rounded, size: 16),
+                        label: Text(accountChipLabel),
+                        selected: filter.accountId != null,
+                        onSelected: (_) =>
+                            _pickAccountFilter(provider, accountsProvider),
                       ),
                     ),
                     Padding(

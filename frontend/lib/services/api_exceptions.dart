@@ -27,7 +27,7 @@ class ApiException implements Exception {
         );
       case DioExceptionType.badCertificate:
         return const ApiException(
-          'Secure connection failed due to an invalid server certificate.',
+          'Secure TLS connection failed due to an invalid server certificate.',
         );
       case DioExceptionType.cancel:
         return const ApiException('The request was cancelled.');
@@ -56,11 +56,24 @@ class ApiException implements Exception {
             statusCode: status,
           );
         }
+        if (status == 423) {
+          return ApiException(
+            detail ?? 'Account temporarily locked due to repeated failed attempts.',
+            statusCode: status,
+          );
+        }
+        if (status == 429) {
+          return ApiException(
+            detail ?? 'Too many requests. Please wait a moment and try again.',
+            statusCode: status,
+          );
+        }
         return ApiException(
           detail ?? 'Server returned an unexpected error (${status ?? 'unknown'}).',
           statusCode: status,
         );
       case DioExceptionType.unknown:
+      default:
         return const ApiException(
           'Unable to reach the JobMail server. Please check your network connection.',
           isOffline: true,

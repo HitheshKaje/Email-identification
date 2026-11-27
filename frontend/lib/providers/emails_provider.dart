@@ -67,6 +67,13 @@ class EmailsProvider extends ChangeNotifier {
     await loadEmails();
   }
 
+  Future<void> setAccountFilter(String? accountId) async {
+    _filter = (accountId == null || accountId.trim().isEmpty)
+        ? _filter.copyWith(clearAccount: true)
+        : _filter.copyWith(accountId: accountId);
+    await loadEmails();
+  }
+
   Future<void> setCompanyFilter(String? company) async {
     _filter = (company == null || company.trim().isEmpty)
         ? _filter.copyWith(clearCompany: true)

@@ -3,6 +3,9 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/connected_account.dart';
 import '../providers/accounts_provider.dart';
+import '../providers/dashboard_provider.dart';
+import '../providers/emails_provider.dart';
+import '../providers/notifications_provider.dart';
 import '../theme/app_colors.dart';
 import '../utils/responsive.dart';
 import '../widgets/account_card.dart';
@@ -17,14 +20,33 @@ class ConnectedAccountsScreen extends StatefulWidget {
       _ConnectedAccountsScreenState();
 }
 
-class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen> {
+class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen>
+    with WidgetsBindingObserver {
+  bool _awaitingOAuthReturn = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       context.read<AccountsProvider>().loadAccounts();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _awaitingOAuthReturn && mounted) {
+      _awaitingOAuthReturn = false;
+      context.read<AccountsProvider>().loadAccounts();
+      context.read<DashboardProvider>().loadDashboard();
+    }
   }
 
   Future<void> _connectGmail() async {
@@ -36,7 +58,7 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            provider.errorMessage ?? 'Unable to start Google OAuth flow.',
+            provider.actionError ?? 'Unable to start Google OAuth flow.',
           ),
         ),
       );
@@ -51,8 +73,10 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen> {
       return;
     }
 
+    _awaitingOAuthReturn = true;
     final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!launched && mounted) {
+      _awaitingOAuthReturn = false;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Could not launch browser for Google sign-in.'),
@@ -68,7 +92,7 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen> {
         return AlertDialog(
           title: const Text('Disconnect Gmail Account?'),
           content: Text(
-            'Disconnecting ${account.emailAddress} will stop background synchronization and permanently delete its stored OAuth credentials from JobMail.',
+            'Disconnecting ${account.emailAddress} will stop background synchronization, revoke its Google OAuth tokens, and permanently delete its stored credentials and synced emails from JobMail.',
           ),
           actions: <Widget>[
             TextButton(
@@ -90,13 +114,18 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen> {
     final provider = context.read<AccountsProvider>();
     final ok = await provider.disconnectAccount(account.id);
     if (!mounted) return;
+    if (ok) {
+      context.read<DashboardProvider>().loadDashboard();
+      context.read<EmailsProvider>().loadEmails();
+      context.read<NotificationsProvider>().loadNotifications();
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           ok
               ? '${account.emailAddress} disconnected.'
-              : (provider.errorMessage ?? 'Disconnect failed.'),
+              : (provider.actionError ?? 'Disconnect failed.'),
         ),
       ),
     );
@@ -249,15 +278,36 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen> {
           child: AccountCard(
             account: account,
             isSyncing: provider.syncingAccountId == account.id,
-            onSync: () async {
-              final ok = await provider.syncAccount(account.id);
+            isVerifying: provider.verifyingAccountId == account.id,
+            onReconnect: _connectGmail,
+            onVerify: () async {
+              final ok = await provider.verifyAccount(account.id);
               if (!context.mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
                     ok
-                        ? 'Synced ${account.emailAddress}.'
-                        : (provider.errorMessage ?? 'Sync failed.'),
+                        ? '${account.emailAddress} connection verified.'
+                        : (provider.actionError ?? 'Verification failed.'),
+                  ),
+                ),
+              );
+            },
+            onSync: () async {
+              final ok = await provider.syncAccount(account.id);
+              if (!context.mounted) return;
+              if (ok) {
+                context.read<DashboardProvider>().loadDashboard();
+                context.read<EmailsProvider>().loadEmails();
+                context.read<NotificationsProvider>().loadNotifications();
+              }
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    ok
+                        ? (provider.lastSyncMessage ??
+                            'Synced ${account.emailAddress}.')
+                        : (provider.actionError ?? 'Sync failed.'),
                   ),
                 ),
               );

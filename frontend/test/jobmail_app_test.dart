@@ -1,12 +1,14 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jobmail/app.dart';
+import 'package:jobmail/models/auth_session.dart';
 import 'package:jobmail/models/connected_account.dart';
 import 'package:jobmail/models/dashboard_stats.dart';
 import 'package:jobmail/models/email_category.dart';
 import 'package:jobmail/models/email_item.dart';
 import 'package:jobmail/models/notification_item.dart';
 import 'package:jobmail/models/notification_preferences.dart';
+import 'package:jobmail/models/security_models.dart';
+import 'package:jobmail/models/user_profile.dart';
 import 'package:jobmail/screens/splash_screen.dart';
 import 'package:jobmail/services/jobmail_repository.dart';
 import 'package:jobmail/services/preferences_service.dart';
@@ -34,6 +36,8 @@ class FakeJobMailRepository implements JobMailRepository {
         companyName: 'Infosys',
         jobRole: 'Software Developer',
         isRead: false,
+        hasAttachments: true,
+        attachmentNames: <String>['interview_schedule.pdf'],
       ),
       EmailItem(
         id: 'email-2',
@@ -96,6 +100,191 @@ class FakeJobMailRepository implements JobMailRepository {
   NotificationPreferences _prefs = const NotificationPreferences();
 
   @override
+  Future<AuthSession> register({
+    required String name,
+    required String email,
+    required String password,
+  }) async {
+    return AuthSession(
+      accessToken: 'test-jwt-token',
+      user: UserProfile(id: 'user-1', name: name, email: email),
+    );
+  }
+
+  @override
+  Future<AuthSession> login({
+    required String email,
+    required String password,
+  }) async {
+    return AuthSession(
+      accessToken: 'test-jwt-token',
+      refreshToken: 'sess-1.refresh-token',
+      sessionId: 'sess-1',
+      user: UserProfile(
+        id: 'user-1',
+        name: 'Candidate',
+        email: email,
+        emailVerified: true,
+      ),
+    );
+  }
+
+  @override
+  Future<AuthSession> verifyMfaLogin({
+    required String challengeToken,
+    required String code,
+  }) async =>
+      login(email: 'candidate@example.com', password: 'ignored');
+
+  @override
+  Future<AuthSession> refreshSession({String? refreshToken}) async =>
+      login(email: 'candidate@example.com', password: 'ignored');
+
+  @override
+  Future<void> logout() async {}
+
+  @override
+  Future<void> logoutAllDevices() async {}
+
+  @override
+  Future<UserProfile> getCurrentProfile() async => const UserProfile(
+        id: 'user-1',
+        name: 'Candidate',
+        email: 'candidate@example.com',
+        emailVerified: true,
+        mfaEnabled: false,
+      );
+
+  @override
+  Future<UserProfile> updateProfileName(String name) async {
+    return UserProfile(
+      id: 'user-1',
+      name: name,
+      email: 'candidate@example.com',
+      emailVerified: true,
+    );
+  }
+
+  @override
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {}
+
+  @override
+  Future<void> requestPasswordReset(String email) async {}
+
+  @override
+  Future<void> confirmPasswordReset({
+    required String token,
+    required String newPassword,
+  }) async {}
+
+  @override
+  Future<void> requestEmailVerification() async {}
+
+  @override
+  Future<UserProfile> confirmEmailVerification(String token) async =>
+      const UserProfile(
+        id: 'user-1',
+        name: 'Candidate',
+        email: 'candidate@example.com',
+        emailVerified: true,
+      );
+
+  @override
+  Future<MfaSetupInfo> setupMfa() async => const MfaSetupInfo(
+        secret: 'JBSWY3DPEHPK3PXP',
+        provisioningUri: 'otpauth://totp/JobMail:candidate@example.com?secret=JBSWY3DPEHPK3PXP',
+        recoveryCodes: <String>['ABCD-1234', 'EFGH-5678'],
+      );
+
+  @override
+  Future<UserProfile> enableMfa(String code) async => const UserProfile(
+        id: 'user-1',
+        name: 'Candidate',
+        email: 'candidate@example.com',
+        emailVerified: true,
+        mfaEnabled: true,
+      );
+
+  @override
+  Future<UserProfile> disableMfa({
+    required String password,
+    required String code,
+  }) async =>
+      getCurrentProfile();
+
+  @override
+  Future<List<SessionInfo>> getActiveSessions() async => <SessionInfo>[
+        SessionInfo(
+          id: 'sess-1',
+          deviceInfo: 'Flutter Test Client',
+          ipAddress: '127.0.0.1',
+          createdAt: DateTime(2026, 11, 26),
+          lastActiveAt: DateTime(2026, 11, 27),
+          expiresAt: DateTime(2026, 12, 10),
+          isCurrent: true,
+        ),
+      ];
+
+  @override
+  Future<void> revokeSession(String sessionId) async {}
+
+  @override
+  Future<List<SecurityEventItem>> getSecurityEvents() async =>
+      <SecurityEventItem>[
+        SecurityEventItem(
+          id: 'evt-1',
+          eventType: 'LOGIN_SUCCESS',
+          severity: 'info',
+          summary: 'Signed in successfully.',
+          createdAt: DateTime(2026, 11, 27),
+        ),
+      ];
+
+  @override
+  Future<PrivacyOverview> getPrivacyOverview() async => PrivacyOverview(
+        dataRetentionDays: 180,
+        gmailScope: 'https://www.googleapis.com/auth/gmail.readonly',
+        emailsStored: _emails.length,
+        connectedAccounts: _accounts.length,
+        notificationsStored: _notifications.length,
+        encryptionAtRest: 'MultiFernet',
+        limitedUseNotice: 'Read-only personal job inbox usage only.',
+      );
+
+  @override
+  Future<PrivacyOverview> updateDataRetention(int retentionDays) async =>
+      PrivacyOverview(
+        dataRetentionDays: retentionDays,
+        gmailScope: 'https://www.googleapis.com/auth/gmail.readonly',
+        emailsStored: _emails.length,
+        connectedAccounts: _accounts.length,
+        notificationsStored: _notifications.length,
+        encryptionAtRest: 'MultiFernet',
+        limitedUseNotice: 'Read-only personal job inbox usage only.',
+      );
+
+  @override
+  Future<Map<String, dynamic>> exportMyData() async => <String, dynamic>{
+        'emails': _emails.length,
+      };
+
+  @override
+  Future<String> deleteGmailData({bool disconnectAccounts = false}) async {
+    _emails = <EmailItem>[];
+    if (disconnectAccounts) _accounts = <ConnectedAccount>[];
+    return 'Deleted Gmail data.';
+  }
+
+  @override
+  Future<void> deleteAccount({
+    required String password,
+    String confirmText = 'DELETE',
+  }) async {}
+
+  @override
   Future<DashboardStats> getDashboardStatistics() async {
     final jobEmails =
         _emails.where((e) => e.category != EmailCategory.other).toList();
@@ -104,6 +293,7 @@ class FakeJobMailRepository implements JobMailRepository {
       counts[email.category] = (counts[email.category] ?? 0) + 1;
     }
     return DashboardStats(
+      totalProcessedEmails: _emails.length,
       totalJobEmails: jobEmails.length,
       newOpportunities: (counts[EmailCategory.job] ?? 0) +
           (counts[EmailCategory.internship] ?? 0),
@@ -129,6 +319,11 @@ class FakeJobMailRepository implements JobMailRepository {
     return _emails.where((e) {
       if (e.category == EmailCategory.other) return false;
       if (filter.category != null && e.category != filter.category) {
+        return false;
+      }
+      if (filter.accountId != null &&
+          filter.accountId!.isNotEmpty &&
+          e.accountId != filter.accountId) {
         return false;
       }
       if (filter.isRead != null && e.isRead != filter.isRead) {
@@ -184,10 +379,15 @@ class FakeJobMailRepository implements JobMailRepository {
   }
 
   @override
-  Future<void> triggerSync({String? accountId}) async {}
+  Future<String> triggerSync({String? accountId}) async =>
+      'Synced 1 account(s): 2 new email(s), 0 duplicate(s) skipped.';
 
   @override
   Future<List<ConnectedAccount>> getConnectedAccounts() async => _accounts;
+
+  @override
+  Future<ConnectedAccount> verifyAccount(String accountId) async =>
+      _accounts.firstWhere((a) => a.id == accountId);
 
   @override
   Future<String> initiateGoogleOAuth() async =>
@@ -222,15 +422,19 @@ class FakeJobMailRepository implements JobMailRepository {
 }
 
 void main() {
-  Future<PreferencesService> buildPrefs({bool onboardingDone = false}) async {
+  Future<PreferencesService> buildPrefs({
+    bool onboardingDone = false,
+    bool authenticated = false,
+  }) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'jobmail_onboarding_done': onboardingDone,
+      if (authenticated) 'jobmail_auth_token': 'test-jwt-token',
     });
     final sp = await SharedPreferences.getInstance();
     return PreferencesService(sp);
   }
 
-  testWidgets('Splash navigates to Onboarding and then Dashboard',
+  testWidgets('Splash navigates to Onboarding and then AuthScreen',
       (WidgetTester tester) async {
     final prefs = await buildPrefs(onboardingDone: false);
     final repo = FakeJobMailRepository();
@@ -257,14 +461,13 @@ void main() {
     await tester.tap(find.text('Get Started'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Total Job Emails'), findsOneWidget);
-    expect(find.text('Shortlisted for Software Developer Interview'),
-        findsOneWidget);
+    expect(find.text('Welcome to JobMail'), findsOneWidget);
+    expect(find.text('Sign In'), findsWidgets);
   });
 
   testWidgets('Navigation covers Inbox, Categories, Accounts, Details, Alerts',
       (WidgetTester tester) async {
-    final prefs = await buildPrefs(onboardingDone: true);
+    final prefs = await buildPrefs(onboardingDone: true, authenticated: true);
     final repo = FakeJobMailRepository();
 
     await tester.pumpWidget(
@@ -286,6 +489,7 @@ void main() {
 
     expect(find.text('Email Details'), findsOneWidget);
     expect(find.text('careers@infosys.com'), findsOneWidget);
+    expect(find.text('Sanitized Text'), findsOneWidget);
     expect(find.text('Open in Gmail'), findsOneWidget);
 
     await tester.pageBack();
@@ -309,9 +513,13 @@ void main() {
     expect(find.text('candidate.jobs@gmail.com'), findsOneWidget);
     expect(find.text('Connect Gmail'), findsOneWidget);
 
-    // Switch to Settings tab and change Theme
+    // Switch to Settings tab and verify Security Dashboard sections & Theme
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
+    expect(find.text('Account Security'), findsOneWidget);
+    expect(find.text('Change Password'), findsOneWidget);
+    expect(find.text('Active Sessions'), findsOneWidget);
+    expect(find.text('Privacy'), findsOneWidget);
     expect(find.text('Theme Mode'), findsOneWidget);
     await tester.tap(find.text('Dark'));
     await tester.pumpAndSettle();

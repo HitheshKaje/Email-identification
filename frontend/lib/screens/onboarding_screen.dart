@@ -4,6 +4,7 @@ import '../providers/app_settings_provider.dart';
 import '../theme/app_colors.dart';
 import '../widgets/jobmail_logo.dart';
 import '../widgets/main_navigation_shell.dart';
+import 'auth_screen.dart';
 
 class _OnboardingBenefit {
   const _OnboardingBenefit({
@@ -75,11 +76,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _finishOnboarding() async {
-    await context.read<AppSettingsProvider>().completeOnboarding();
+    final settings = context.read<AppSettingsProvider>();
+    await settings.completeOnboarding();
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => const MainNavigationShell(),
+        builder: (_) => settings.isAuthenticated
+            ? const MainNavigationShell()
+            : const AuthScreen(),
       ),
     );
   }
