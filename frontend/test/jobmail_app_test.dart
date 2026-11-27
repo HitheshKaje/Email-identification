@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jobmail/app.dart';
+import 'package:jobmail/providers/accounts_provider.dart';
 import 'package:jobmail/models/auth_session.dart';
 import 'package:jobmail/models/connected_account.dart';
 import 'package:jobmail/models/dashboard_stats.dart';
@@ -393,9 +394,14 @@ class FakeJobMailRepository implements JobMailRepository {
   Future<ConnectedAccount> verifyAccount(String accountId) async =>
       _accounts.firstWhere((a) => a.id == accountId);
 
+  int oauthConnectCalls = 0;
+
   @override
-  Future<String> initiateGoogleOAuth() async =>
-      'https://accounts.google.com/o/oauth2/v2/auth';
+  Future<String> initiateGoogleOAuth() async {
+    oauthConnectCalls++;
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+    return 'https://accounts.google.com/o/oauth2/v2/auth?state=test-state';
+  }
 
   @override
   Future<void> disconnectAccount(String accountId) async {
@@ -647,5 +653,24 @@ void main() {
       find.text('Server: https://jobmail-backend-tzwt.onrender.com'),
       findsOneWidget,
     );
+  });
+
+  test('AccountsProvider deduplicates concurrent Google OAuth connect calls',
+      () async {
+    final repo = FakeJobMailRepository();
+    final provider = AccountsProvider(repo);
+
+    final results = await Future.wait<String?>(<Future<String?>>[
+      provider.requestGoogleConnectUrl(),
+      provider.requestGoogleConnectUrl(),
+    ]);
+
+    expect(repo.oauthConnectCalls, 1);
+    expect(results[0], results[1]);
+    expect(provider.isConnecting, isFalse);
+
+    // Subsequent sequential OAuth connect attempt runs cleanly
+    await provider.requestGoogleConnectUrl();
+    expect(repo.oauthConnectCalls, 2);
   });
 }

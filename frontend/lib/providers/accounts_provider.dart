@@ -12,6 +12,7 @@ class AccountsProvider extends ChangeNotifier {
   List<ConnectedAccount> _accounts = const <ConnectedAccount>[];
   bool _isLoading = false;
   bool _isConnecting = false;
+  Future<String?>? _inFlightOAuthConnect;
   String? _syncingAccountId;
   String? _verifyingAccountId;
   String? _errorMessage;
@@ -45,22 +46,31 @@ class AccountsProvider extends ChangeNotifier {
   }
 
   Future<String?> requestGoogleConnectUrl() async {
+    if (_inFlightOAuthConnect != null) {
+      return _inFlightOAuthConnect!;
+    }
+
     _isConnecting = true;
     _actionError = null;
     notifyListeners();
 
-    try {
-      return await _repository.initiateGoogleOAuth();
-    } on ApiException catch (e) {
-      _actionError = e.message;
-      return null;
-    } catch (_) {
-      _actionError = 'Unable to start Google OAuth connection.';
-      return null;
-    } finally {
-      _isConnecting = false;
-      notifyListeners();
-    }
+    final future = () async {
+      try {
+        return await _repository.initiateGoogleOAuth();
+      } on ApiException catch (e) {
+        _actionError = e.message;
+        return null;
+      } catch (_) {
+        _actionError = 'Unable to start Google OAuth connection.';
+        return null;
+      } finally {
+        _isConnecting = false;
+        _inFlightOAuthConnect = null;
+        notifyListeners();
+      }
+    }();
+    _inFlightOAuthConnect = future;
+    return future;
   }
 
   Future<bool> syncAccount(String accountId) async {

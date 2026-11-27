@@ -1,6 +1,8 @@
 """Phase 3 tests for Google OAuth 2.0 flow, token encryption, refresh, revocation, and multi-account support."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+import logging
 from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
@@ -280,3 +282,155 @@ async def test_oauth_callback_handles_access_denied_and_expired_state(
     )
     assert expired.status_code == 400
     assert "expired" in expired.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_preserves_state_on_probe_coalesces_duplicates_and_logs_safely(
+    client, fastapi_app, caplog
+):
+    ac, db = client
+    transport_app, _ = fastapi_app
+    oauth_cfg = Settings(
+        environment="test",
+        mongodb_uri="mongodb://localhost:27017",
+        mongodb_db_name="jobmail_test",
+        jwt_secret_key="test-only-jwt-secret-key-at-least-32-bytes-long",
+        token_encryption_key="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        google_client_id="252912608567-test.apps.googleusercontent.com",
+        google_client_secret="GOCSPX-SecretValueNeverLog12345",
+        google_redirect_uri="https://jobmail-backend-tzwt.onrender.com/auth/google/callback",
+        frontend_url="https://email-identification-frontend.vercel.app",
+        google_oauth_scopes=REQUIRED_GMAIL_SCOPE,
+    )
+    token_exchange_calls = 0
+    transient_fail_once = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_exchange_calls, transient_fail_once
+        if str(request.url) == "https://oauth2.googleapis.com/token":
+            if transient_fail_once:
+                transient_fail_once = False
+                raise httpx.ConnectError("simulated upstream blip")
+            token_exchange_calls += 1
+            await asyncio.sleep(0.25)
+            body = parse_qs(request.content.decode("utf-8"))
+            code = body["code"][0]
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": f"ya29.access-secret-{code}",
+                    "expires_in": 3600,
+                    "refresh_token": f"1//refresh-secret-{code}",
+                    "scope": REQUIRED_GMAIL_SCOPE,
+                    "token_type": "Bearer",
+                },
+            )
+        if str(request.url) == "https://gmail.googleapis.com/gmail/v1/users/me/profile":
+            auth_header = request.headers.get("authorization", "")
+            email_addr = (
+                "first.concurrent@gmail.com"
+                if "code-conc-1" in auth_header
+                else "second.outoforder@gmail.com"
+            )
+            return httpx.Response(200, json={"emailAddress": email_addr, "historyId": "404"})
+        return httpx.Response(404)
+
+    mock_client = GoogleOAuthClient(oauth_cfg, transport=httpx.MockTransport(handler))
+    transport_app.dependency_overrides[get_settings] = lambda: oauth_cfg
+    transport_app.dependency_overrides[get_google_oauth_client] = lambda: mock_client
+
+    jwt_token, _ = await _register_user(ac, email="resilient.oauth@example.com")
+
+    with caplog.at_level(logging.INFO, logger="jobmail"):
+        # Start two concurrent OAuth flows; neither overwrites the other
+        c1 = await ac.post("/auth/google/connect", headers={"Authorization": f"Bearer {jwt_token}"})
+        c2 = await ac.post("/auth/google/connect", headers={"Authorization": f"Bearer {jwt_token}"})
+        assert c1.status_code == 200 and c2.status_code == 200
+        state1 = c1.json()["state"]
+        state2 = c2.json()["state"]
+        assert state1 != state2
+        assert await db.oauth_states.count_documents({"state": {"$in": [state1, state2]}}) == 2
+
+        # 1. Incomplete probe lacking code preserves pending state1
+        probe = await ac.get("/auth/google/callback", params={"state": state1, "format": "json"})
+        assert probe.status_code == 400
+        assert "authorization code" in probe.json()["detail"].lower()
+        doc1_after_probe = await db.oauth_states.find_one({"state": state1})
+        assert doc1_after_probe is not None and doc1_after_probe["status"] == "pending"
+
+        # 2. Transient upstream network error rolls state1 back to pending for retry
+        transient_fail_once = True
+        transient = await ac.get(
+            "/auth/google/callback",
+            params={"code": "code-conc-1", "state": state1, "format": "json"},
+        )
+        assert transient.status_code == 502
+        doc1_after_transient = await db.oauth_states.find_one({"state": state1})
+        assert doc1_after_transient is not None and doc1_after_transient["status"] == "pending"
+
+        # 3. Concurrent duplicate callback requests with same (state1, code) coalesce to single exchange,
+        #    while a concurrent injected mismatched code is strictly rejected (400)
+        task_r1 = asyncio.create_task(
+            ac.get("/auth/google/callback", params={"code": "code-conc-1", "state": state1})
+        )
+        await asyncio.sleep(0.05)
+        r2, mismatch = await asyncio.gather(
+            ac.get("/auth/google/callback", params={"code": "code-conc-1", "state": state1}),
+            ac.get("/auth/google/callback", params={"code": "attacker-code", "state": state1, "format": "json"}),
+        )
+        r1 = await task_r1
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert mismatch.status_code == 400
+        assert token_exchange_calls == 1
+        assert "first.concurrent@gmail.com" in r1.text
+        assert "first.concurrent@gmail.com" in r2.text
+        assert "Return to JobMail Web" in r1.text
+        assert "https://email-identification-frontend.vercel.app/" in r1.text
+
+        # PKCE verifier is scrubbed upon completion while consumed metadata remains until TTL
+        completed_doc1 = await db.oauth_states.find_one({"state": state1})
+        assert completed_doc1 is not None
+        assert completed_doc1["status"] == "completed"
+        assert "encrypted_code_verifier" not in completed_doc1
+
+        # 4. Sequential post-completion replay is strictly rejected (400 CSRF/replay defense)
+        post_replay = await ac.get(
+            "/auth/google/callback",
+            params={"code": "code-conc-1", "state": state1, "format": "json"},
+        )
+        assert post_replay.status_code == 400
+        assert "already-used" in post_replay.json()["detail"].lower()
+
+        # 5. Second independent attempt state2 remains valid and completes cleanly
+        cb2 = await ac.get(
+            "/auth/google/callback",
+            params={"code": "code-conc-2", "state": state2, "format": "json"},
+        )
+        assert cb2.status_code == 200
+        assert cb2.json()["email_address"] == "second.outoforder@gmail.com"
+
+        # 6. Application logs never expose raw state, code, tokens, or client secret
+        rendered_logs = "\n".join(
+            r.getMessage() for r in caplog.records if r.name.startswith("jobmail")
+        )
+        assert state1 not in rendered_logs
+        assert state2 not in rendered_logs
+        assert "code-conc-1" not in rendered_logs
+        assert "code-conc-2" not in rendered_logs
+        assert "attacker-code" not in rendered_logs
+        assert "ya29.access-secret" not in rendered_logs
+        assert "1//refresh-secret" not in rendered_logs
+        assert "GOCSPX-SecretValueNeverLog12345" not in rendered_logs
+        assert "state_fp=" in rendered_logs
+
+        # 7. SensitiveDataFilter scrubs query-string code/state parameters defensively
+        from app.core.logging import redact_sensitive_text
+
+        scrubbed = redact_sensitive_text(
+            "GET /auth/google/callback?code=secretcode123&state=secretstate456"
+        )
+        assert "secretcode123" not in scrubbed
+        assert "secretstate456" not in scrubbed
+        assert "code=[REDACTED]" in scrubbed
+        assert "state=[REDACTED]" in scrubbed

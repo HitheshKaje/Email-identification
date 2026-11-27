@@ -23,6 +23,7 @@ class ConnectedAccountsScreen extends StatefulWidget {
 class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen>
     with WidgetsBindingObserver {
   bool _awaitingOAuthReturn = false;
+  bool _isLaunchingOAuth = false;
 
   @override
   void initState() {
@@ -51,37 +52,45 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen>
 
   Future<void> _connectGmail() async {
     final provider = context.read<AccountsProvider>();
-    final authUrl = await provider.requestGoogleConnectUrl();
-    if (!mounted) return;
+    if (_isLaunchingOAuth || provider.isConnecting) return;
 
-    if (authUrl == null || authUrl.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            provider.actionError ?? 'Unable to start Google OAuth flow.',
+    _isLaunchingOAuth = true;
+    try {
+      final authUrl = await provider.requestGoogleConnectUrl();
+      if (!mounted) return;
+
+      if (authUrl == null || authUrl.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              provider.actionError ?? 'Unable to start Google OAuth flow.',
+            ),
           ),
-        ),
-      );
-      return;
-    }
+        );
+        return;
+      }
 
-    final uri = Uri.tryParse(authUrl);
-    if (uri == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid OAuth authorization URL.')),
-      );
-      return;
-    }
+      final uri = Uri.tryParse(authUrl);
+      if (uri == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invalid OAuth authorization URL.')),
+        );
+        return;
+      }
 
-    _awaitingOAuthReturn = true;
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!launched && mounted) {
-      _awaitingOAuthReturn = false;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not launch browser for Google sign-in.'),
-        ),
-      );
+      _awaitingOAuthReturn = true;
+      final launched =
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        _awaitingOAuthReturn = false;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not launch browser for Google sign-in.'),
+          ),
+        );
+      }
+    } finally {
+      _isLaunchingOAuth = false;
     }
   }
 
@@ -264,7 +273,8 @@ class _ConnectedAccountsScreenState extends State<ConnectedAccountsScreen>
         title: 'No Gmail accounts connected',
         subtitle:
             'Connect one or more Gmail accounts to start automatically detecting job opportunities and interview invitations.',
-        actionLabel: 'Connect Gmail',
+        actionLabel:
+            provider.isConnecting ? 'Opening Google OAuth...' : 'Connect Gmail',
         onAction: _connectGmail,
       );
     }

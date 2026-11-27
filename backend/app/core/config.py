@@ -97,6 +97,22 @@ def _has_localhost(url_or_origin: str) -> bool:
     return host in _LOCALHOST_HOSTS
 
 
+def _extract_host(url_or_origin: str) -> str:
+    parsed = urlparse(_strip_matching_quotes(url_or_origin))
+    return (parsed.hostname or "").lower()
+
+
+def _is_cross_site_deployment(frontend_url: str, backend_url: str) -> bool:
+    """Return True when frontend and backend resolve to distinct registrable/public-suffix hosts."""
+    fe_host = _extract_host(frontend_url)
+    be_host = _extract_host(backend_url)
+    if not fe_host or not be_host or fe_host == be_host:
+        return False
+    # Platforms like *.vercel.app and *.onrender.com are on the Public Suffix List,
+    # and distinct hosts without a shared cookie domain require SameSite=None over HTTPS.
+    return True
+
+
 def _has_localhost_mongodb(uri: str) -> bool:
     cleaned = uri.strip()
     parsed = urlparse(cleaned)
@@ -239,9 +255,20 @@ class Settings(BaseSettings):
             return self.enable_api_docs
         return not self.is_production
 
-    @field_validator("mongodb_uri", "mongodb_db_name")
+    @field_validator(
+        "mongodb_uri",
+        "mongodb_db_name",
+        "jwt_secret_key",
+        "token_encryption_key",
+        "token_encryption_keys",
+        "google_client_id",
+        "google_client_secret",
+        "google_redirect_uri",
+        "google_oauth_scopes",
+        "cookie_domain",
+    )
     @classmethod
-    def _normalize_mongo_fields(cls, value: str) -> str:
+    def _strip_string_quotes(cls, value: str) -> str:
         return _strip_matching_quotes(value)
 
     @field_validator("frontend_url")
@@ -342,6 +369,24 @@ class Settings(BaseSettings):
                     and "CORS_ORIGINS" not in os.environ
                 ):
                     self.cors_origins = self.frontend_url.rstrip("/")
+
+            if "cookie_secure" not in self.model_fields_set:
+                self.cookie_secure = True
+
+            backend_origin = (
+                render_url if render_url.startswith("https://") else self.google_redirect_uri
+            )
+            if (
+                "cookie_samesite" not in self.model_fields_set
+                and not self.cookie_domain.strip()
+                and _is_cross_site_deployment(self.frontend_url, backend_origin)
+            ):
+                self.cookie_samesite = "none"
+
+            if self.cookie_samesite == "none" and not self.effective_cookie_secure:
+                prod_errors.append(
+                    "COOKIE_SAMESITE=none requires COOKIE_SECURE=true over HTTPS in production."
+                )
 
             if not self.mongodb_uri or self.mongodb_uri in _PLACEHOLDER_SECRETS:
                 prod_errors.append(

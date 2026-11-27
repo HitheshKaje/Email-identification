@@ -1,14 +1,21 @@
 """Service layer managing Google OAuth 2.0 PKCE flow, MultiFernet encrypted tokens, refresh, and complete disconnect."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 import logging
 import secrets
+from urllib.parse import urlparse
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
 from app.authentication.encryption import TokenEncryptor
 from app.authentication.google_oauth import GoogleOAuthClient
-from app.authentication.security import generate_pkce_pair
+from app.authentication.security import generate_pkce_pair, hash_opaque_token
 from app.core.config import Settings
 from app.core.exceptions import (
+    ExternalServiceError,
     NotFoundError,
     OAuthError,
     OAuthRevokedError,
@@ -23,11 +30,28 @@ from app.services.security_audit_service import SecurityAuditService
 
 logger = logging.getLogger("jobmail.oauth_service")
 
+_IN_FLIGHT_WAIT_SECONDS = 5.0
+_IN_FLIGHT_POLL_INTERVAL_SECONDS = 0.15
+_CONSUMED_STATE_RETENTION_MINUTES = 5
+
 
 def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _state_fingerprint(state: str) -> str:
+    """Return a non-reversible 8-char SHA-256 prefix for safe diagnostic logs."""
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()[:8]
+
+
+def _safe_redirect_target(redirect_uri: str) -> str:
+    """Return scheme://host/path without query parameters or credentials."""
+    parsed = urlparse(redirect_uri.strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path}"
+    return "[invalid-redirect-uri]"
 
 
 class GoogleOAuthService:
@@ -54,6 +78,7 @@ class GoogleOAuthService:
             )
 
         state = secrets.token_urlsafe(32)
+        state_fp = _state_fingerprint(state)
         code_verifier, code_challenge = generate_pkce_pair()
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(
@@ -62,14 +87,23 @@ class GoogleOAuthService:
         await self._db.oauth_states.insert_one(
             {
                 "state": state,
+                "state_fingerprint": state_fp,
                 "user_id": user_id,
                 "encrypted_code_verifier": self._encryptor.encrypt(code_verifier),
+                "status": "pending",
                 "created_at": now,
                 "expires_at": expires_at,
             }
         )
         auth_url = self._oauth.build_authorization_url(
             state, code_challenge=code_challenge
+        )
+        logger.info(
+            "OAuth state created state_fp=%s user_id=%s redirect_uri=%s expires_in_min=%d",
+            state_fp,
+            user_id,
+            _safe_redirect_target(self._settings.google_redirect_uri),
+            self._settings.oauth_state_expire_minutes,
         )
         await self._audit.log_event(
             event_type="GOOGLE_OAUTH_INITIATED",
@@ -93,90 +127,202 @@ class GoogleOAuthService:
         ip_address: str | None = None,
     ) -> ConnectedAccountResponse:
         if not state:
+            logger.warning(
+                "OAuth callback rejected reason=missing_state has_code=%s has_error=%s",
+                bool(code),
+                bool(error),
+            )
             raise OAuthError("Missing OAuth state parameter.")
 
-        state_doc = await self._db.oauth_states.find_one_and_delete({"state": state})
-        if not state_doc:
-            await self._audit.log_event(
-                event_type="OAUTH_REPLAY_OR_INVALID_STATE",
-                severity="high",
-                ip_address=ip_address,
-                alert=True,
-                summary="Rejected OAuth callback with invalid or already-used state.",
-            )
-            raise OAuthError("Invalid or already-used OAuth state. Please try connecting again.")
+        state_fp = _state_fingerprint(state)
+        now = datetime.now(timezone.utc)
 
-        expires_at = _as_utc(state_doc["expires_at"])
-        if expires_at <= datetime.now(timezone.utc):
+        # Preserve pending OAuth state if an incomplete probe arrives with neither code nor error.
+        if not error and not code:
+            return await self._handle_missing_code_probe(
+                state=state, state_fp=state_fp, now=now, ip_address=ip_address
+            )
+
+        code_hash = hash_opaque_token(code) if code else ""
+        pending_filter = {
+            "state": state,
+            "$or": [{"status": "pending"}, {"status": {"$exists": False}}],
+        }
+        claimed_doc = await self._db.oauth_states.find_one_and_update(
+            pending_filter,
+            {
+                "$set": {
+                    "status": "processing",
+                    "code_hash": code_hash,
+                    "processing_started_at": now,
+                }
+            },
+            return_document=ReturnDocument.BEFORE,
+        )
+        if not claimed_doc:
+            return await self._handle_unclaimed_state(
+                state=state,
+                state_fp=state_fp,
+                code=code,
+                code_hash=code_hash,
+                error=error,
+                now=now,
+                ip_address=ip_address,
+            )
+
+        expires_at = _as_utc(claimed_doc["expires_at"])
+        if expires_at <= now:
+            await self._finalize_state(
+                state=state,
+                status="expired",
+                expires_at=expires_at,
+                consumed_at=now,
+            )
+            logger.warning("OAuth callback rejected reason=expired state_fp=%s", state_fp)
             raise OAuthError("OAuth session expired. Please initiate Connect Gmail again.")
 
         if error:
             detail = error_description or error
-            raise OAuthError(f"Google authorization was not completed: {detail}")
-
-        if not code:
-            raise OAuthError("Missing OAuth authorization code.")
+            err_msg = f"Google authorization was not completed: {detail}"
+            await self._finalize_state(
+                state=state,
+                status="failed",
+                expires_at=expires_at,
+                consumed_at=now,
+                error_detail=err_msg,
+            )
+            logger.warning(
+                "OAuth callback failed reason=provider_error state_fp=%s provider_error=%s",
+                state_fp,
+                error,
+            )
+            raise OAuthError(err_msg)
 
         if not self._settings.google_oauth_client_configured:
+            await self._release_state_to_pending(state=state)
             raise ServiceNotConfiguredError(
                 "Google OAuth 2.0 credentials are not configured on the server."
             )
 
-        user_id = str(state_doc["user_id"])
+        user_id = str(claimed_doc["user_id"])
         code_verifier: str | None = None
-        if state_doc.get("encrypted_code_verifier"):
+        if claimed_doc.get("encrypted_code_verifier"):
             code_verifier = self._encryptor.decrypt(
-                str(state_doc["encrypted_code_verifier"])
+                str(claimed_doc["encrypted_code_verifier"])
             )
 
-        token_payload = await self._oauth.exchange_code_for_tokens(
-            code, code_verifier=code_verifier
-        )
-        profile = await self._oauth.fetch_gmail_profile(token_payload.access_token)
+        try:
+            assert code is not None
+            token_payload = await self._oauth.exchange_code_for_tokens(
+                code, code_verifier=code_verifier
+            )
+            profile = await self._oauth.fetch_gmail_profile(token_payload.access_token)
 
-        now = datetime.now(timezone.utc)
-        access_expires_at = now + timedelta(seconds=token_payload.expires_in)
-        encrypted_access = self._encryptor.encrypt(token_payload.access_token)
+            done_at = datetime.now(timezone.utc)
+            access_expires_at = done_at + timedelta(seconds=token_payload.expires_in)
+            encrypted_access = self._encryptor.encrypt(token_payload.access_token)
 
-        existing = await self._db.connected_accounts.find_one(
-            {"user_id": user_id, "email_address": profile.email_address}
-        )
-
-        if token_payload.refresh_token:
-            encrypted_refresh = self._encryptor.encrypt(token_payload.refresh_token)
-        elif existing and existing.get("encrypted_refresh_token"):
-            encrypted_refresh = str(existing["encrypted_refresh_token"])
-        else:
-            raise OAuthError(
-                "Google did not return a refresh token. Please remove prior access in your Google Account permissions and try again."
+            existing = await self._db.connected_accounts.find_one(
+                {"user_id": user_id, "email_address": profile.email_address}
             )
 
-        scopes = [s for s in token_payload.scope.split() if s]
-        update_fields: dict[str, object] = {
-            "provider": "google",
-            "encrypted_access_token": encrypted_access,
-            "access_token_expires_at": access_expires_at,
-            "encrypted_refresh_token": encrypted_refresh,
-            "scopes": scopes,
-            "sync_status": AccountSyncStatus.PENDING.value,
-            "status_message": "Connected via Google OAuth 2.0 (read-only).",
-        }
-        if profile.history_id:
-            update_fields["history_id"] = profile.history_id
+            if token_payload.refresh_token:
+                encrypted_refresh = self._encryptor.encrypt(token_payload.refresh_token)
+            elif existing and existing.get("encrypted_refresh_token"):
+                encrypted_refresh = str(existing["encrypted_refresh_token"])
+            else:
+                raise OAuthError(
+                    "Google did not return a refresh token. Please remove prior access in your Google Account permissions and try again."
+                )
 
-        doc = await self._db.connected_accounts.find_one_and_update(
-            {"user_id": user_id, "email_address": profile.email_address},
-            {
-                "$set": update_fields,
-                "$setOnInsert": {
-                    "user_id": user_id,
-                    "email_address": profile.email_address,
-                    "connected_at": now,
-                    "last_synced_at": None,
+            scopes = [s for s in token_payload.scope.split() if s]
+            update_fields: dict[str, object] = {
+                "provider": "google",
+                "encrypted_access_token": encrypted_access,
+                "access_token_expires_at": access_expires_at,
+                "encrypted_refresh_token": encrypted_refresh,
+                "scopes": scopes,
+                "sync_status": AccountSyncStatus.PENDING.value,
+                "status_message": "Connected via Google OAuth 2.0 (read-only).",
+            }
+            if profile.history_id:
+                update_fields["history_id"] = profile.history_id
+
+            doc = await self._db.connected_accounts.find_one_and_update(
+                {"user_id": user_id, "email_address": profile.email_address},
+                {
+                    "$set": update_fields,
+                    "$setOnInsert": {
+                        "user_id": user_id,
+                        "email_address": profile.email_address,
+                        "connected_at": done_at,
+                        "last_synced_at": None,
+                    },
                 },
-            },
-            upsert=True,
-            return_document=True,
+                upsert=True,
+                return_document=True,
+            )
+        except ExternalServiceError as exc:
+            # Preserve pending state only if Google servers were transiently unreachable before consumption.
+            if datetime.now(timezone.utc) < expires_at:
+                await self._release_state_to_pending(state=state)
+                logger.warning(
+                    "OAuth callback transient error; state preserved state_fp=%s user_id=%s exc=%s",
+                    state_fp,
+                    user_id,
+                    type(exc).__name__,
+                )
+            else:
+                await self._finalize_state(
+                    state=state,
+                    status="expired",
+                    expires_at=expires_at,
+                    consumed_at=datetime.now(timezone.utc),
+                )
+            raise
+        except OAuthError as exc:
+            await self._finalize_state(
+                state=state,
+                status="failed",
+                expires_at=expires_at,
+                consumed_at=datetime.now(timezone.utc),
+                error_detail=exc.detail,
+            )
+            logger.warning(
+                "OAuth callback failed state_fp=%s user_id=%s status_code=%d",
+                state_fp,
+                user_id,
+                exc.status_code,
+            )
+            raise
+        except Exception as exc:
+            await self._finalize_state(
+                state=state,
+                status="failed",
+                expires_at=expires_at,
+                consumed_at=datetime.now(timezone.utc),
+                error_detail="Unexpected error completing Google OAuth callback.",
+            )
+            logger.error(
+                "OAuth callback unexpected error state_fp=%s user_id=%s exc=%s",
+                state_fp,
+                user_id,
+                type(exc).__name__,
+            )
+            raise
+
+        await self._finalize_state(
+            state=state,
+            status="completed",
+            expires_at=expires_at,
+            consumed_at=done_at,
+            connected_account_id=str(doc["_id"]),
+        )
+        logger.info(
+            "OAuth callback succeeded state_fp=%s user_id=%s account=%s",
+            state_fp,
+            user_id,
+            mask_email(profile.email_address),
         )
         await self._audit.log_event(
             event_type="GOOGLE_ACCOUNT_CONNECTED",
@@ -185,6 +331,227 @@ class GoogleOAuthService:
             summary=f"Connected Gmail account {mask_email(profile.email_address)}.",
         )
         return account_doc_to_response(doc)
+
+    async def _handle_missing_code_probe(
+        self,
+        *,
+        state: str,
+        state_fp: str,
+        now: datetime,
+        ip_address: str | None,
+    ) -> ConnectedAccountResponse:
+        existing = await self._db.oauth_states.find_one({"state": state})
+        if not existing:
+            logger.warning(
+                "OAuth callback rejected reason=not_found_missing_code state_fp=%s",
+                state_fp,
+            )
+            await self._log_invalid_state_audit(ip_address=ip_address)
+            raise OAuthError("Invalid or already-used OAuth state. Please try connecting again.")
+
+        expires_at = _as_utc(existing["expires_at"])
+        if expires_at <= now:
+            if existing.get("status") in (None, "pending"):
+                await self._finalize_state(
+                    state=state,
+                    status="expired",
+                    expires_at=expires_at,
+                    consumed_at=now,
+                )
+            logger.warning(
+                "OAuth callback rejected reason=expired_missing_code state_fp=%s",
+                state_fp,
+            )
+            raise OAuthError("OAuth session expired. Please initiate Connect Gmail again.")
+
+        if existing.get("status") not in (None, "pending"):
+            logger.warning(
+                "OAuth callback rejected reason=already_used_missing_code state_fp=%s prior_status=%s",
+                state_fp,
+                existing.get("status"),
+            )
+            await self._log_invalid_state_audit(ip_address=ip_address)
+            raise OAuthError("Invalid or already-used OAuth state. Please try connecting again.")
+
+        logger.warning(
+            "OAuth callback missing authorization code; pending state preserved state_fp=%s",
+            state_fp,
+        )
+        raise OAuthError("Missing OAuth authorization code.")
+
+    async def _handle_unclaimed_state(
+        self,
+        *,
+        state: str,
+        state_fp: str,
+        code: str | None,
+        code_hash: str,
+        error: str | None,
+        now: datetime,
+        ip_address: str | None,
+    ) -> ConnectedAccountResponse:
+        existing = await self._db.oauth_states.find_one({"state": state})
+        if not existing:
+            logger.warning(
+                "OAuth callback rejected reason=not_found state_fp=%s has_code=%s has_error=%s",
+                state_fp,
+                bool(code),
+                bool(error),
+            )
+            await self._log_invalid_state_audit(ip_address=ip_address)
+            raise OAuthError("Invalid or already-used OAuth state. Please try connecting again.")
+
+        current_status = existing.get("status")
+        expires_at = _as_utc(existing["expires_at"])
+        if current_status == "expired" or (
+            expires_at <= now and current_status in (None, "pending", "processing")
+        ):
+            await self._finalize_state(
+                state=state,
+                status="expired",
+                expires_at=expires_at,
+                consumed_at=now,
+            )
+            logger.warning(
+                "OAuth callback rejected reason=expired state_fp=%s prior_status=%s",
+                state_fp,
+                current_status,
+            )
+            raise OAuthError("OAuth session expired. Please initiate Connect Gmail again.")
+
+        if current_status == "processing":
+            existing_code_hash = str(existing.get("code_hash") or "")
+            if (
+                error is None
+                and code
+                and existing_code_hash
+                and hmac.compare_digest(existing_code_hash, code_hash)
+            ):
+                logger.info(
+                    "OAuth callback coalescing concurrent in-flight request state_fp=%s",
+                    state_fp,
+                )
+                return await self._await_in_flight_callback(state=state, state_fp=state_fp)
+
+            logger.warning(
+                "OAuth callback rejected reason=code_mismatch_in_flight state_fp=%s has_error=%s",
+                state_fp,
+                bool(error),
+            )
+            await self._log_invalid_state_audit(ip_address=ip_address)
+            raise OAuthError("Invalid or already-used OAuth state. Please try connecting again.")
+
+        consumed_raw = existing.get("consumed_at")
+        consumed_ago = (
+            f"{(now - _as_utc(consumed_raw)).total_seconds():.1f}s"
+            if isinstance(consumed_raw, datetime)
+            else "unknown"
+        )
+        logger.warning(
+            "OAuth callback rejected reason=already_used state_fp=%s prior_status=%s consumed_ago=%s",
+            state_fp,
+            current_status,
+            consumed_ago,
+        )
+        await self._log_invalid_state_audit(ip_address=ip_address)
+        raise OAuthError("Invalid or already-used OAuth state. Please try connecting again.")
+
+    async def _await_in_flight_callback(
+        self, *, state: str, state_fp: str
+    ) -> ConnectedAccountResponse:
+        deadline = asyncio.get_running_loop().time() + _IN_FLIGHT_WAIT_SECONDS
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(_IN_FLIGHT_POLL_INTERVAL_SECONDS)
+            doc = await self._db.oauth_states.find_one({"state": state})
+            if not doc:
+                raise OAuthError(
+                    "Invalid or already-used OAuth state. Please try connecting again."
+                )
+            st = doc.get("status")
+            if st == "completed":
+                acc_id_raw = str(doc.get("connected_account_id") or "")
+                user_id = str(doc.get("user_id") or "")
+                if acc_id_raw and ObjectId.is_valid(acc_id_raw):
+                    acc_doc = await self._db.connected_accounts.find_one(
+                        {"_id": ObjectId(acc_id_raw), "user_id": user_id}
+                    )
+                    if acc_doc:
+                        logger.info(
+                            "OAuth callback coalesced successfully state_fp=%s",
+                            state_fp,
+                        )
+                        return account_doc_to_response(acc_doc)
+                raise OAuthError("Connected Gmail account could not be loaded.")
+            if st == "failed":
+                raise OAuthError(
+                    str(
+                        doc.get("error_detail")
+                        or "Google authorization failed. Please try connecting again."
+                    )
+                )
+            if st == "expired":
+                raise OAuthError("OAuth session expired. Please initiate Connect Gmail again.")
+            if st == "pending":
+                raise ExternalServiceError(
+                    "Unable to reach Google OAuth servers. Please try again."
+                )
+
+        logger.warning(
+            "OAuth callback timed out awaiting in-flight completion state_fp=%s",
+            state_fp,
+        )
+        raise OAuthError(
+            "Gmail connection is still completing. Return to Connected Accounts and refresh."
+        )
+
+    async def _finalize_state(
+        self,
+        *,
+        state: str,
+        status: str,
+        expires_at: datetime,
+        consumed_at: datetime,
+        connected_account_id: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        retention_deadline = min(
+            expires_at,
+            consumed_at + timedelta(minutes=_CONSUMED_STATE_RETENTION_MINUTES),
+        )
+        update_fields: dict[str, object] = {
+            "status": status,
+            "consumed_at": consumed_at,
+            "expires_at": retention_deadline,
+        }
+        if connected_account_id is not None:
+            update_fields["connected_account_id"] = connected_account_id
+        if error_detail is not None:
+            update_fields["error_detail"] = error_detail[:300]
+        await self._db.oauth_states.update_one(
+            {"state": state},
+            {
+                "$set": update_fields,
+                "$unset": {"encrypted_code_verifier": ""},
+            },
+        )
+
+    async def _release_state_to_pending(self, *, state: str) -> None:
+        await self._db.oauth_states.update_one(
+            {"state": state, "status": "processing"},
+            {
+                "$set": {"status": "pending"},
+                "$unset": {"code_hash": "", "processing_started_at": ""},
+            },
+        )
+
+    async def _log_invalid_state_audit(self, *, ip_address: str | None) -> None:
+        await self._audit.log_event(
+            event_type="OAUTH_REPLAY_OR_INVALID_STATE",
+            severity="high",
+            ip_address=ip_address,
+            alert=True,
+            summary="Rejected OAuth callback with invalid or already-used state.",
+        )
 
     async def get_valid_access_token(
         self,

@@ -18,6 +18,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"GOCSPX-[A-Za-z0-9_\-]+"), "[REDACTED_OAUTH_SECRET]"),
     (re.compile(r"ya29\.[A-Za-z0-9_\-]+"), "[REDACTED_ACCESS_TOKEN]"),
     (re.compile(r"1//[A-Za-z0-9_\-]+"), "[REDACTED_REFRESH_TOKEN]"),
+    (re.compile(r"([?&](?:code|state)=)[^&\s\"']+"), r"\1[REDACTED]"),
     (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b"), "[REDACTED_JWT]"),
 )
 

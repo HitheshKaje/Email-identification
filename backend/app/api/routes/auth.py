@@ -1,7 +1,10 @@
 """Authentication lifecycle, MFA, rotating sessions, cookies, security events, and Google OAuth routes."""
 
+import hashlib
 import html
+import logging
 from typing import Annotated
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -52,6 +55,23 @@ from app.services.rate_limiter import (
 from app.services.security_audit_service import SecurityAuditService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger("jobmail.auth_routes")
+
+
+def _safe_web_return_url(frontend_url: str | None) -> str | None:
+    raw = (frontend_url or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}/"
+    return None
+
+
+def _state_fingerprint(state: str | None) -> str:
+    if not state:
+        return "none"
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()[:8]
 
 
 def _set_auth_cookies(response: Response, token_res: TokenResponse, settings: Settings) -> None:
@@ -96,13 +116,41 @@ def _set_auth_cookies(response: Response, token_res: TokenResponse, settings: Se
 
 def clear_auth_cookies(response: Response, settings: Settings) -> None:
     domain = settings.cookie_domain.strip() or None
-    response.delete_cookie(key=ACCESS_COOKIE_NAME, domain=domain, path="/")
-    response.delete_cookie(key=REFRESH_COOKIE_NAME, domain=domain, path="/auth")
-    response.delete_cookie(key=CSRF_COOKIE_NAME, domain=domain, path="/")
+    secure = settings.effective_cookie_secure
+    samesite = settings.cookie_samesite
+    response.delete_cookie(
+        key=ACCESS_COOKIE_NAME,
+        domain=domain,
+        path="/",
+        secure=secure,
+        httponly=True,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        domain=domain,
+        path="/auth",
+        secure=secure,
+        httponly=True,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        key=CSRF_COOKIE_NAME,
+        domain=domain,
+        path="/",
+        secure=secure,
+        httponly=False,
+        samesite=samesite,
+    )
 
 
 def _render_oauth_html(
-    *, title: str, heading: str, message: str, success: bool
+    *,
+    title: str,
+    heading: str,
+    message: str,
+    success: bool,
+    frontend_url: str | None = None,
 ) -> str:
     accent = "#059669" if success else "#DC2626"
     badge = "Connected" if success else "Connection Failed"
@@ -110,6 +158,13 @@ def _render_oauth_html(
     safe_title = html.escape(title)
     safe_heading = html.escape(heading)
     safe_message = html.escape(message)
+    web_return_url = _safe_web_return_url(frontend_url)
+    web_link_html = (
+        f'<a class="btn" href="{html.escape(web_return_url, quote=True)}">Return to JobMail Web</a>\n    '
+        if web_return_url
+        else ""
+    )
+    mobile_btn_class = "btn-secondary" if web_return_url else "btn"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -134,10 +189,16 @@ def _render_oauth_html(
     }}
     h1 {{ font-size: 22px; margin: 0 0 10px; }}
     p {{ color: #475569; line-height: 1.5; margin: 0 0 18px; }}
+    .actions {{ display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }}
     .btn {{
       display: inline-block; background: #1d4ed8; color: #ffffff;
       text-decoration: none; font-weight: 600; font-size: 14px;
-      padding: 11px 20px; border-radius: 12px; margin-bottom: 14px;
+      padding: 11px 20px; border-radius: 12px;
+    }}
+    .btn-secondary {{
+      display: inline-block; background: #eff6ff; color: #1d4ed8;
+      border: 1px solid #bfdbfe; text-decoration: none; font-weight: 600;
+      font-size: 14px; padding: 11px 20px; border-radius: 12px;
     }}
     .hint {{ font-size: 13px; color: #64748b; margin-bottom: 0; }}
   </style>
@@ -147,8 +208,10 @@ def _render_oauth_html(
     <span class="pill">{badge}</span>
     <h1>{safe_heading}</h1>
     <p>{safe_message}</p>
-    <a class="btn" href="jobmail://oauth-callback?status={status_param}">Return to JobMail App</a>
-    <p class="hint">On desktop, you may close this tab and return to JobMail.</p>
+    <div class="actions">
+      {web_link_html}<a class="{mobile_btn_class}" href="jobmail://oauth-callback?status={status_param}">Return to JobMail App</a>
+    </div>
+    <p class="hint">On desktop web, click Return to JobMail Web or close this tab to refresh Connected Accounts.</p>
   </main>
 </body>
 </html>"""
@@ -656,6 +719,13 @@ async def google_callback(
         response_format == "json"
         or "application/json" in request.headers.get("accept", "").lower()
     )
+    logger.info(
+        "OAuth callback received state_fp=%s has_code=%s has_error=%s wants_json=%s",
+        _state_fingerprint(state),
+        bool(code),
+        bool(error),
+        wants_json,
+    )
     service = GoogleOAuthService(db, settings, oauth_client)
     try:
         account = await service.handle_callback(
@@ -678,6 +748,7 @@ async def google_callback(
                 heading="Could not connect Gmail",
                 message=exc.detail,
                 success=False,
+                frontend_url=settings.frontend_url,
             ),
         )
 
@@ -696,6 +767,7 @@ async def google_callback(
                 "Return to JobMail and refresh your Connected Accounts list."
             ),
             success=True,
+            frontend_url=settings.frontend_url,
         ),
     )
 

@@ -810,3 +810,87 @@ def test_render_external_url_derives_safe_https_defaults_and_aggregates_errors(m
             environment="development",
             mongodb_uri="mongodb://localhost:27017",
         )
+
+
+@pytest.mark.asyncio
+async def test_production_cross_site_cookie_defaults_and_quote_normalization():
+    atlas_uri = "mongodb+srv://dbuser:dbpass@cluster0.example.mongodb.net/?retryWrites=true&w=majority"
+    fernet_key = Fernet.generate_key().decode("ascii")
+
+    # Cross-site Vercel + Render production config without explicit COOKIE_SAMESITE
+    # automatically selects Secure + SameSite=none and strips matching env quotes.
+    prod_cfg = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri=atlas_uri,
+        mongodb_db_name="jobmail_prod",
+        jwt_secret_key='"p' + ("s" * 40) + '"',
+        token_encryption_key=f'"{fernet_key}"',
+        google_client_id='"252912608567-test.apps.googleusercontent.com"',
+        google_client_secret='"GOCSPX-testsecret"',
+        google_redirect_uri='"https://jobmail-backend-tzwt.onrender.com/auth/google/callback"',
+        frontend_url="https://email-identification-frontend.vercel.app",
+        cors_origins="https://email-identification-frontend.vercel.app",
+    )
+    assert prod_cfg.effective_cookie_secure is True
+    assert prod_cfg.cookie_secure is True
+    assert prod_cfg.cookie_samesite == "none"
+    assert prod_cfg.cookie_domain == ""
+    assert (
+        prod_cfg.google_redirect_uri
+        == "https://jobmail-backend-tzwt.onrender.com/auth/google/callback"
+    )
+    assert prod_cfg.google_client_id == "252912608567-test.apps.googleusercontent.com"
+
+    # Explicit COOKIE_SAMESITE override is respected when valid with HTTPS
+    explicit_cfg = Settings(
+        _env_file=None,
+        environment="production",
+        mongodb_uri=atlas_uri,
+        mongodb_db_name="jobmail_prod",
+        jwt_secret_key="s" * 40,
+        token_encryption_key=fernet_key,
+        google_redirect_uri="https://api.yourdomain.com/auth/google/callback",
+        frontend_url="https://app.yourdomain.com",
+        cors_origins="https://app.yourdomain.com",
+        cookie_domain=".yourdomain.com",
+        cookie_samesite="lax",
+    )
+    assert explicit_cfg.cookie_samesite == "lax"
+    assert explicit_cfg.cookie_domain == ".yourdomain.com"
+
+    # Verify Set-Cookie and Delete-Cookie headers carry Secure; SameSite=none
+    from fastapi import Response
+    from app.api.routes.auth import _set_auth_cookies, clear_auth_cookies
+    from app.models.schemas import TokenResponse, UserResponse
+
+    set_resp = Response()
+    _set_auth_cookies(
+        set_resp,
+        TokenResponse(
+            access_token="access.jwt.token",
+            refresh_token="sid.refresh",
+            session_id="sid",
+            expires_in=900,
+            user=UserResponse(
+                id="u1",
+                name="Prod User",
+                email="prod@example.com",
+                created_at=datetime.now(timezone.utc),
+            ),
+        ),
+        prod_cfg,
+    )
+    set_headers = set_resp.headers.getlist("set-cookie")
+    assert len(set_headers) == 3
+    for cookie_hdr in set_headers:
+        assert "Secure" in cookie_hdr
+        assert "SameSite=none" in cookie_hdr
+
+    clear_resp = Response()
+    clear_auth_cookies(clear_resp, prod_cfg)
+    clear_headers = clear_resp.headers.getlist("set-cookie")
+    assert len(clear_headers) == 3
+    for cookie_hdr in clear_headers:
+        assert "Secure" in cookie_hdr
+        assert "SameSite=none" in cookie_hdr
